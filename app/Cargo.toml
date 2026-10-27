@@ -16,3 +16,4 @@ serde_json.workspace = true
 chrono.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"

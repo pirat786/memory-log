@@ -265,13 +265,25 @@ for (const [value, name] of Object.entries(CATEGORY_NAMES)) {
   $("goalCat").append(o);
 }
 
+// Любая ошибка показывается на странице, а не оставляет её пустой.
+async function guarded(task) {
+  const box = $("errorBox");
+  try {
+    await task();
+    box.hidden = true;
+  } catch (e) {
+    box.hidden = false;
+    box.textContent = `Не удалось загрузить данные: ${typeof e === "string" ? e : JSON.stringify(e)}`;
+  }
+}
+
 async function start() {
-  $("autostart").checked = await invoke("get_autostart");
-  await render();
-  await renderWeek();
-  await refreshStatus();
+  await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
+  await guarded(render);
+  await guarded(renderWeek);
+  await guarded(refreshStatus);
 }
 
 start();
-setInterval(() => { render(); refreshStatus(); }, 15_000);
-setInterval(renderWeek, 5 * 60_000);
+setInterval(() => { guarded(render); guarded(refreshStatus); }, 15_000);
+setInterval(() => guarded(renderWeek), 5 * 60_000);

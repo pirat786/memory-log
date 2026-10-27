@@ -9,6 +9,8 @@ use ml_core::{sessions, summary, time, Bookmark, Categorizer, Category, DayInput
 use ml_storage::Storage;
 use serde::Serialize;
 
+use crate::log;
+
 #[derive(Serialize)]
 pub struct Status {
     pub paused: bool,
@@ -21,6 +23,7 @@ pub struct AppState {
     pub categorizer: Categorizer,
     pub paused: AtomicBool,
     downloads_dir: Option<PathBuf>,
+    db_path: PathBuf,
 }
 
 fn parse_date(date: Option<&str>) -> Result<NaiveDate, String> {
@@ -40,12 +43,32 @@ fn fmt_ts(ts: i64) -> String {
 
 impl AppState {
     pub fn open(db_path: &Path, downloads_dir: Option<PathBuf>) -> Result<Self, Box<dyn Error>> {
+        let (storage, moved) = Storage::open_or_recover(db_path)?;
+        if let Some(moved) = moved {
+            log::info(&format!("база была повреждена, старый файл сохранён: {}", moved.display()));
+        }
         Ok(Self {
-            storage: Mutex::new(Storage::open(db_path)?),
+            storage: Mutex::new(storage),
             categorizer: Categorizer::with_defaults(),
             paused: AtomicBool::new(false),
             downloads_dir,
+            db_path: db_path.to_path_buf(),
         })
+    }
+
+    /// Вызывается, когда во время работы выяснилось, что база повреждена:
+    /// откладывает файл и начинает новую базу, чтобы запись не останавливалась.
+    pub fn recover_database(&self) {
+        let Ok(mut storage) = self.storage.lock() else { return };
+        match Storage::open_or_recover(&self.db_path) {
+            Ok((fresh, moved)) => {
+                if let Some(moved) = moved {
+                    log::info(&format!("база повреждена во время работы, старый файл: {}", moved.display()));
+                }
+                *storage = fresh;
+            }
+            Err(e) => log::info(&format!("не удалось восстановить базу: {e}")),
+        }
     }
 
     pub fn is_paused(&self) -> bool {

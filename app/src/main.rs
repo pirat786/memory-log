@@ -15,6 +15,15 @@ use crate::state::AppState;
 
 fn main() {
     tauri::Builder::default()
+        // Вторая копия не запускается, а показывает окно первой: две программы
+        // не должны одновременно писать в одну базу.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .setup(|app| {
             let dir = app.path().app_data_dir()?;

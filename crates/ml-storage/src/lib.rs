@@ -18,12 +18,47 @@ const MIGRATIONS: &[&str] = &[
 pub enum StorageError {
     #[error("ошибка базы данных: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("база данных повреждена: {0}")]
+    Corrupt(String),
+    #[error("не удалось переместить повреждённую базу: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl StorageError {
+    /// Ошибка говорит о повреждении файла базы, а не о временной проблеме.
+    pub fn is_corruption(&self) -> bool {
+        match self {
+            StorageError::Corrupt(_) => true,
+            StorageError::Db(e) => {
+                let text = e.to_string();
+                text.contains("malformed") || text.contains("not a database")
+            }
+            StorageError::Io(_) => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
 pub struct Storage {
     conn: Connection,
+}
+
+/// Переименовывает файлы повреждённой базы, чтобы их можно было разобрать вручную.
+fn quarantine(path: &Path) -> Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("db");
+    let moved = path.with_file_name(format!("{stem}.corrupt-{stamp}.db"));
+    for suffix in ["", "-wal", "-shm"] {
+        let from = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+        if from.exists() {
+            std::fs::rename(&from, format!("{}{suffix}", moved.display()))?;
+        }
+    }
+    Ok(moved)
 }
 
 fn read_sample(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
@@ -33,6 +68,30 @@ fn read_sample(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
 impl Storage {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
+    }
+
+    /// Открывает базу и проверяет её целостность. Если файл повреждён, он откладывается
+    /// в сторону (рядом, с пометкой `corrupt`), а вместо него создаётся новая пустая база.
+    /// Возвращает путь к отложенному файлу, если это случилось.
+    pub fn open_or_recover(path: &Path) -> Result<(Self, Option<std::path::PathBuf>)> {
+        let checked = Self::open(path).and_then(|s| s.check_integrity().map(|_| s));
+        match checked {
+            Ok(storage) => Ok((storage, None)),
+            Err(e) if e.is_corruption() => {
+                let moved = quarantine(path)?;
+                Ok((Self::open(path)?, Some(moved)))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        let result: String = self.conn.pragma_query_value(None, "integrity_check", |r| r.get(0))?;
+        if result == "ok" {
+            Ok(())
+        } else {
+            Err(StorageError::Corrupt(result))
+        }
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -251,6 +310,20 @@ mod tests {
         assert_eq!(st.procs_between(0, 10).unwrap(), vec![p]);
         st.prune(10, 10).unwrap();
         assert!(st.system_between(0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn corrupt_file_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("ml-corrupt-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memory-log.db");
+        std::fs::write(&path, vec![0x42u8; 8192]).unwrap();
+
+        let (storage, moved) = Storage::open_or_recover(&path).unwrap();
+        assert!(moved.as_ref().is_some_and(|m| m.exists()));
+        storage.insert_sample(&sample(1, "a", "t")).unwrap();
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

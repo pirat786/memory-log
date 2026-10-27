@@ -65,6 +65,9 @@ pub fn spawn(state: Arc<AppState>) {
                 match result {
                     Ok(()) => errors = 0,
                     Err(e) => {
+                        if e.contains("malformed") || e.contains("not a database") {
+                            state.recover_database();
+                        }
                         errors += 1;
                         if errors <= MAX_LOGGED_ERRORS {
                             log::info(&format!("ошибка записи: {e}"));
