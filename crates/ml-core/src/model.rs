@@ -35,6 +35,84 @@ pub enum Category {
     Other,
 }
 
+impl Category {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Work => "work",
+            Category::Communication => "communication",
+            Category::Social => "social",
+            Category::Entertainment => "entertainment",
+            Category::Shopping => "shopping",
+            Category::Study => "study",
+            Category::Games => "games",
+            Category::Other => "other",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "work" => Category::Work,
+            "communication" => Category::Communication,
+            "social" => Category::Social,
+            "entertainment" => Category::Entertainment,
+            "shopping" => Category::Shopping,
+            "study" => Category::Study,
+            "games" => Category::Games,
+            "other" => Category::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// Снимок состояния ПК. Трафик (`net_rx`, `net_tx`) — байты за интервал с прошлого снимка.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SystemSample {
+    pub ts: Timestamp,
+    pub cpu_pct: f32,
+    pub mem_pct: f32,
+    pub mem_used_mb: u32,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub disk_free_gb: Option<f32>,
+    pub battery_pct: Option<u8>,
+    pub on_battery: Option<bool>,
+    pub temp_c: Option<f32>,
+    pub uptime_s: u64,
+}
+
+/// Нагрузка одной программы (все её процессы вместе) в момент снимка.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcSample {
+    pub ts: Timestamp,
+    pub name: String,
+    pub cpu_pct: f32,
+    pub mem_mb: u32,
+}
+
+/// Дневная цель: не больше N минут в категории.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Goal {
+    pub category: Category,
+    pub limit_mins: u32,
+}
+
+/// Файл, появившийся в папке загрузок.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Download {
+    pub name: String,
+    pub size: u64,
+    pub ts: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub app: String,
+    pub title: String,
+    pub first_ts: Timestamp,
+    pub last_ts: Timestamp,
+    pub count: u32,
+}
+
 /// Непрерывный отрезок времени в одном окне.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {

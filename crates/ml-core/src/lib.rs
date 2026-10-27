@@ -5,10 +5,11 @@ pub mod categorize;
 pub mod model;
 pub mod privacy;
 pub mod sessions;
+pub mod stats;
 pub mod summary;
 pub mod time;
 
 pub use categorize::Categorizer;
-pub use model::{Bookmark, Category, Sample, Session, Timestamp};
+pub use model::{Bookmark, Category, Download, Goal, ProcSample, Sample, SearchHit, Session, SystemSample, Timestamp};
 pub use privacy::PrivacyFilter;
-pub use summary::DaySummary;
+pub use summary::{DayInput, DaySummary, WeekDay};

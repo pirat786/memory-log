@@ -6,10 +6,12 @@ edition.workspace = true
 [dependencies]
 ml-core.workspace = true
 chrono.workspace = true
+sysinfo.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_System_Power",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",

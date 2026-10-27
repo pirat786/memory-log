@@ -14,6 +14,7 @@
       <button id="next" title="Следующий день">›</button>
     </div>
     <div class="actions">
+      <span id="status" class="status muted"></span>
       <button id="mark">⭐ Запомнить это</button>
       <button id="pause">⏸ Пауза</button>
     </div>
@@ -23,11 +24,15 @@
     <section class="hero">
       <div class="big" id="total">—</div>
       <div class="muted">активного времени за компьютером</div>
+      <div class="muted" id="rhythm"></div>
     </section>
 
     <section>
       <h2>Чем занимались</h2>
       <div id="categories" class="bars"></div>
+      <h3>Цели на день</h3>
+      <div id="goals"></div>
+      <button id="addGoal" class="small">+ Цель</button>
     </section>
 
     <section>
@@ -41,10 +46,81 @@
     </section>
 
     <section>
+      <h2>Нагрузка ПК</h2>
+      <div id="load" class="cards"></div>
+    </section>
+
+    <section>
+      <h2>Интернет-трафик</h2>
+      <div id="net" class="cards"></div>
+      <div id="hours" class="chart"></div>
+      <div class="muted small-text">Трафик всего компьютера по часам. По программам Windows без прав администратора его не отдаёт.</div>
+    </section>
+
+    <section>
+      <h2>Самые нагруженные программы</h2>
+      <div id="procs"></div>
+    </section>
+
+    <section>
+      <h2>Состояние ПК</h2>
+      <div id="health"></div>
+    </section>
+
+    <section>
+      <h2>Загрузки за день</h2>
+      <div id="downloads"></div>
+    </section>
+
+    <section>
       <h2>Чаще всего</h2>
       <div id="apps" class="bars"></div>
     </section>
+
+    <section>
+      <h2>Неделя</h2>
+      <div id="week" class="bars"></div>
+    </section>
+
+    <section>
+      <h2>Поиск по истории</h2>
+      <input id="q" type="search" placeholder="Например: рецепт, договор, youtube…">
+      <div id="results"></div>
+    </section>
+
+    <section>
+      <h2>Инструменты</h2>
+      <div class="tools">
+        <button id="export">Сохранить день в таблицу (CSV)</button>
+        <button id="forget">Забыть последние 10 минут</button>
+        <label><input type="checkbox" id="autostart"> Запускать вместе с Windows</label>
+      </div>
+      <div id="toolMsg" class="muted"></div>
+    </section>
   </main>
+
+  <dialog id="noteDlg">
+    <form method="dialog">
+      <h3>Запомнить этот момент</h3>
+      <input id="noteText" type="text" placeholder="Короткая заметка (необязательно)" autocomplete="off">
+      <div class="row">
+        <button value="cancel">Отмена</button>
+        <button value="ok" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="goalDlg">
+    <form method="dialog">
+      <h3>Цель на день</h3>
+      <select id="goalCat"></select>
+      <input id="goalMin" type="number" min="0" step="5" placeholder="Не больше минут в день (0 — убрать цель)">
+      <div class="row">
+        <button value="cancel">Отмена</button>
+        <button value="ok" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>
