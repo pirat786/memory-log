@@ -1,0 +1,17 @@
+[package]
+name = "memory-log"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ml-core.workspace = true
+ml-storage.workspace = true
+ml-collector.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }

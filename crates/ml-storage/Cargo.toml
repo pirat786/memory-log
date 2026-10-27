@@ -1,0 +1,9 @@
+[package]
+name = "ml-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ml-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,35 @@
+# Правила категорий. Первое подходящее правило побеждает.
+# app   — часть имени программы (без .exe), title — часть заголовка окна.
+# Регистр не важен. Файл можно править без пересборки программы.
+
+[[rule]]
+category = "communication"
+app = ["telegram", "whatsapp", "viber", "discord", "slack", "teams", "zoom", "skype", "outlook", "thunderbird"]
+title = ["gmail", "почта", "inbox", "входящие"]
+
+[[rule]]
+category = "social"
+title = ["instagram", "facebook", "vk.com", "вконтакте", "tiktok", "twitter", "x.com", "reddit", "threads"]
+
+[[rule]]
+category = "entertainment"
+app = ["spotify", "vlc", "netflix"]
+title = ["youtube", "netflix", "twitch", "kinopoisk", "кинопоиск", "rutube"]
+
+[[rule]]
+category = "games"
+app = ["steam", "epicgames", "battle.net", "minecraft", "dota2", "cs2", "valorant"]
+
+[[rule]]
+category = "shopping"
+title = ["amazon", "aliexpress", "ozon", "wildberries", "avito", "авито", "ebay", "корзина", "cart"]
+
+[[rule]]
+category = "study"
+app = ["anki"]
+title = ["coursera", "udemy", "khan academy", "wikipedia", "википедия", "duolingo", "stepik"]
+
+[[rule]]
+category = "work"
+app = ["winword", "excel", "powerpnt", "onenote", "notion", "obsidian", "acrobat", "code", "notepad", "figma"]
+title = ["google docs", "google sheets", "документ", "таблица"]

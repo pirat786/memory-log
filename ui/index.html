@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memory Log</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="nav">
+      <button id="prev" title="Предыдущий день">‹</button>
+      <h1 id="date">Сегодня</h1>
+      <button id="next" title="Следующий день">›</button>
+    </div>
+    <div class="actions">
+      <button id="mark">⭐ Запомнить это</button>
+      <button id="pause">⏸ Пауза</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="big" id="total">—</div>
+      <div class="muted">активного времени за компьютером</div>
+    </section>
+
+    <section>
+      <h2>Чем занимались</h2>
+      <div id="categories" class="bars"></div>
+    </section>
+
+    <section>
+      <h2>Главные занятия</h2>
+      <div id="focus"></div>
+    </section>
+
+    <section>
+      <h2>Что вы отметили как важное</h2>
+      <div id="bookmarks"></div>
+    </section>
+
+    <section>
+      <h2>Чаще всего</h2>
+      <div id="apps" class="bars"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
