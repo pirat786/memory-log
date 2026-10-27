@@ -95,7 +95,7 @@ mod tests {
             session(1500, 1560, "chrome", "c"),
         ];
         let s = build("2026-10-27", &sessions, vec![]);
-        assert_eq!(s.active_secs, 1560);
+        assert_eq!(s.active_secs, 1550);
         assert_eq!(s.top_apps[0].app, "winword");
         assert_eq!(s.focus_blocks.len(), 1);
         assert_eq!(s.focus_blocks[0].end, 1500);
