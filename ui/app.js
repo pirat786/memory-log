@@ -127,6 +127,56 @@ function renderHealth(h) {
   list($("health"), rows, "Пока нет данных");
 }
 
+const TIMELINE_LIMIT = 300;
+let timelineData = [];
+let clipData = [];
+
+// Хронология дня с мгновенным фильтром; без фильтра показываются последние отрезки.
+function renderTimeline() {
+  const q = $("dayFilter").value.trim().toLowerCase();
+  const rows = q
+    ? timelineData.filter((s) => s.app.toLowerCase().includes(q) || s.title.toLowerCase().includes(q))
+    : timelineData;
+  const target = $("timeline");
+  target.replaceChildren();
+  if (!rows.length) return target.append(note(q ? "Ничего не найдено за этот день" : "За этот день пока нет записей"));
+  for (const s of rows.slice(0, TIMELINE_LIMIT)) {
+    const row = el("div", "item tl");
+    row.append(
+      el("span", "tl-time", `${clock(s.start)}–${clock(s.end)}`),
+      el("span", "tl-name", s.title ? `${s.app} — ${s.title}` : s.app),
+      el("span", "muted", duration(s.end - s.start)),
+    );
+    target.append(row);
+  }
+  if (rows.length > TIMELINE_LIMIT) target.append(note(`Показаны последние ${TIMELINE_LIMIT} из ${rows.length}. Уточните фильтр.`));
+  renderClips(q);
+}
+
+function renderClips(q) {
+  const rows = q ? clipData.filter((c) => c.app.toLowerCase().includes(q) || c.text.toLowerCase().includes(q)) : clipData;
+  const target = $("clips");
+  target.replaceChildren();
+  if (!rows.length) return target.append(note(q ? "Ничего не найдено за этот день" : "За этот день ничего не копировали"));
+  for (const c of rows.slice(0, TIMELINE_LIMIT)) {
+    const row = el("div", "item clip");
+    const text = el("span", "tl-name", c.text.length > 300 ? c.text.slice(0, 300) + "…" : c.text);
+    text.title = c.text;
+    const btn = el("button", "small", "Копировать");
+    btn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(c.text);
+        btn.textContent = "Скопировано";
+      } catch {
+        btn.textContent = "Не удалось";
+      }
+      setTimeout(() => (btn.textContent = "Копировать"), 1500);
+    };
+    row.append(el("span", "tl-time", `${clock(c.ts)} · ${c.app}`), text, btn);
+    target.append(row);
+  }
+}
+
 async function renderWeek() {
   const days = await invoke("week_overview");
   bars($("week"), days.map((d) => ({
@@ -145,6 +195,10 @@ async function render() {
   const s = await invoke("day_summary", { date: iso(current) });
   $("total").textContent = duration(s.active_secs);
   $("rhythm").textContent = renderRhythm(s.rhythm);
+
+  timelineData = s.timeline;
+  clipData = s.clips;
+  renderTimeline();
 
   bars($("categories"), s.by_category.map((c) => ({ label: CATEGORY_NAMES[c.category] ?? c.category, secs: c.secs })));
   bars($("apps"), s.top_apps.map((a) => ({ label: a.app, secs: a.secs })));
@@ -252,6 +306,8 @@ $("autostart").onchange = async (e) => {
     toolMessage(`Не удалось изменить автозапуск: ${err}`);
   }
 };
+
+$("dayFilter").oninput = renderTimeline;
 
 let searchTimer;
 $("q").oninput = (e) => {

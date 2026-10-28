@@ -11,6 +11,14 @@ pub struct Sample {
     pub title: String,
 }
 
+/// Текст, скопированный в буфер обмена, и программа, из которой его скопировали.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipEntry {
+    pub ts: Timestamp,
+    pub app: String,
+    pub text: String,
+}
+
 /// Отметка «запомнить это», поставленная пользователем.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bookmark {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::model::{Bookmark, Category, Download, Goal, ProcSample, Session, SystemSample, Timestamp};
+use crate::model::{Bookmark, Category, ClipEntry, Download, Goal, ProcSample, Session, SystemSample, Timestamp};
 use crate::stats::{self, Health, LoadStats, NetStats, ProcLoad, Rhythm};
 
 /// Минимальная длина «фокуса», чтобы попасть в сводку.
@@ -45,6 +45,7 @@ pub struct DayInput<'a> {
     pub system: &'a [SystemSample],
     pub procs: &'a [ProcSample],
     pub downloads: Vec<Download>,
+    pub clips: Vec<ClipEntry>,
     pub goals: &'a [Goal],
 }
 
@@ -55,6 +56,8 @@ pub struct DaySummary {
     pub by_category: Vec<CategoryTime>,
     pub top_apps: Vec<AppTime>,
     pub focus_blocks: Vec<FocusBlock>,
+    /// Хронология дня: отрезки в одном окне, от новых к старым.
+    pub timeline: Vec<Session>,
     pub bookmarks: Vec<Bookmark>,
     pub rhythm: Option<Rhythm>,
     pub load: Option<LoadStats>,
@@ -62,6 +65,8 @@ pub struct DaySummary {
     pub procs: Vec<ProcLoad>,
     pub health: Option<Health>,
     pub downloads: Vec<Download>,
+    /// Скопированное за день, от новых к старым.
+    pub clips: Vec<ClipEntry>,
     pub goals: Vec<GoalProgress>,
 }
 
@@ -97,6 +102,7 @@ pub fn build(input: DayInput) -> DaySummary {
         by_category,
         top_apps,
         focus_blocks: focus_blocks(sessions),
+        timeline: timeline(sessions),
         bookmarks: input.bookmarks,
         rhythm: stats::rhythm(sessions),
         load: stats::load_stats(input.system),
@@ -104,6 +110,7 @@ pub fn build(input: DayInput) -> DaySummary {
         procs: stats::proc_loads(input.procs, 6),
         health: stats::health(input.system),
         downloads: input.downloads,
+        clips: input.clips.into_iter().rev().collect(),
         goals,
     }
 }
@@ -118,6 +125,13 @@ pub(crate) fn merge_blocks(sessions: &[Session]) -> Vec<FocusBlock> {
         }
     }
     blocks
+}
+
+/// Отрезки короче этого (случайные переключения окон) в хронологию не попадают.
+pub const TIMELINE_MIN_SECS: i64 = 15;
+
+fn timeline(sessions: &[Session]) -> Vec<Session> {
+    sessions.iter().rev().filter(|s| s.secs() >= TIMELINE_MIN_SECS).cloned().collect()
 }
 
 fn focus_blocks(sessions: &[Session]) -> Vec<FocusBlock> {
@@ -171,6 +185,7 @@ mod tests {
             system: &[],
             procs: &[],
             downloads: vec![],
+            clips: vec![],
             goals: &goals,
         });
         assert_eq!(s.active_secs, 1550);
@@ -179,5 +194,7 @@ mod tests {
         assert_eq!(s.focus_blocks[0].end, 1500);
         assert_eq!(s.goals[0].used_mins, 25);
         assert!(s.load.is_none());
+        assert_eq!(s.timeline.len(), 3);
+        assert_eq!(s.timeline[0].app, "chrome");
     }
 }

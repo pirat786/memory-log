@@ -3,8 +3,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use ml_collector::SystemCollector;
-use ml_core::PrivacyFilter;
+use ml_collector::{ClipboardWatcher, SystemCollector};
+use ml_core::privacy::HIDDEN_APP;
+use ml_core::{ClipEntry, PrivacyFilter, Sample};
 
 use crate::log;
 use crate::state::AppState;
@@ -26,6 +27,8 @@ pub fn spawn(state: Arc<AppState>) {
         ml_collector::disable_power_throttling();
         let mut windows = ml_collector::default_collector();
         let mut system = SystemCollector::new();
+        let mut clipboard = ClipboardWatcher::new();
+        let mut last_window: Option<Sample> = None;
         let privacy = PrivacyFilter::default();
         // Instant отсчитывается от запуска Windows, поэтому вычитание из него паникует,
         // если ПК включён недавно. Берём «давно» через checked_sub.
@@ -53,15 +56,30 @@ pub fn spawn(state: Arc<AppState>) {
                 }
             }
 
+            // Буфер опрашиваем и на паузе, чтобы скопированное во время паузы не записалось после неё.
+            let copied = clipboard.poll();
             if !state.is_paused() {
                 let mut result = Ok(());
                 if let Some(sample) = windows.sample() {
                     let sample = privacy.apply(sample);
+                    last_window = Some(sample.clone());
                     result = state
                         .storage
                         .lock()
                         .map_err(|e| e.to_string())
                         .and_then(|st| st.insert_sample(&sample).map_err(|e| e.to_string()));
+                }
+                if let (Some(text), true) = (copied, result.is_ok()) {
+                    // Окно, где копировали, считаем скрытым по тем же правилам, что и заголовки: текст из него не пишем.
+                    let app = last_window.as_ref().map_or_else(String::new, |w| w.app.clone());
+                    if app != HIDDEN_APP {
+                        let entry = ClipEntry { ts: Utc::now().timestamp(), app, text };
+                        result = state
+                            .storage
+                            .lock()
+                            .map_err(|e| e.to_string())
+                            .and_then(|st| st.insert_clip(&entry).map_err(|e| e.to_string()));
+                    }
                 }
                 if result.is_ok() && last_system.elapsed() >= SYSTEM_TICK {
                     last_system = Instant::now();

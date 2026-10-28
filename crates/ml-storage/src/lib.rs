@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use ml_core::privacy::HIDDEN_APP;
-use ml_core::{Bookmark, Category, Goal, ProcSample, Sample, SearchHit, SystemSample, Timestamp};
+use ml_core::{Bookmark, Category, ClipEntry, Goal, ProcSample, Sample, SearchHit, SystemSample, Timestamp};
 use rusqlite::{params, Connection};
 
 /// Миграции применяются по порядку; номер версии хранится в `PRAGMA user_version`.
@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/002_audio_reserved.sql"),
     include_str!("../migrations/003_system_metrics.sql"),
     include_str!("../migrations/004_drop_idle.sql"),
+    include_str!("../migrations/005_clipboard.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +134,24 @@ impl Storage {
         let mut stmt = self.conn.prepare("SELECT ts, app, title FROM samples ORDER BY ts DESC LIMIT 1")?;
         let mut rows = stmt.query_map([], read_sample)?;
         Ok(rows.next().transpose()?)
+    }
+
+    /// Подряд идущие одинаковые копирования не дублируются.
+    pub fn insert_clip(&self, c: &ClipEntry) -> Result<()> {
+        let last: Option<String> =
+            self.conn.query_row("SELECT text FROM clipboard ORDER BY ts DESC LIMIT 1", [], |r| r.get(0)).ok();
+        if last.as_deref() == Some(c.text.as_str()) {
+            return Ok(());
+        }
+        self.conn.execute("INSERT INTO clipboard (ts, app, text) VALUES (?1, ?2, ?3)", params![c.ts, c.app, c.text])?;
+        Ok(())
+    }
+
+    pub fn clips_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<ClipEntry>> {
+        let mut stmt =
+            self.conn.prepare("SELECT ts, app, text FROM clipboard WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
+        let rows = stmt.query_map(params![from, to], |r| Ok(ClipEntry { ts: r.get(0)?, app: r.get(1)?, text: r.get(2)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn add_bookmark(&self, b: &Bookmark) -> Result<()> {
@@ -265,7 +284,7 @@ impl Storage {
 
     /// Удаляет всё записанное за период («забыть последние N минут»).
     pub fn delete_between(&self, from: Timestamp, to: Timestamp) -> Result<()> {
-        for table in ["samples", "bookmarks", "system_samples", "proc_samples"] {
+        for table in ["samples", "bookmarks", "system_samples", "proc_samples", "clipboard"] {
             self.conn.execute(&format!("DELETE FROM {table} WHERE ts >= ?1 AND ts < ?2"), params![from, to])?;
         }
         Ok(())
@@ -273,6 +292,7 @@ impl Storage {
 
     /// Чистка старых подробных данных, чтобы база не росла бесконечно.
     pub fn prune(&self, system_before: Timestamp, procs_before: Timestamp) -> Result<()> {
+        self.conn.execute("DELETE FROM clipboard WHERE ts < ?1", params![procs_before])?;
         self.conn.execute("DELETE FROM system_samples WHERE ts < ?1", params![system_before])?;
         self.conn.execute("DELETE FROM proc_samples WHERE ts < ?1", params![procs_before])?;
         Ok(())
@@ -325,6 +345,18 @@ mod tests {
         storage.insert_sample(&sample(1, "a", "t")).unwrap();
         drop(storage);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clipboard_roundtrip_and_dedup() {
+        let st = Storage::open_in_memory().unwrap();
+        let c = |ts, text: &str| ClipEntry { ts, app: "chrome".into(), text: text.into() };
+        st.insert_clip(&c(1, "a")).unwrap();
+        st.insert_clip(&c(2, "a")).unwrap();
+        st.insert_clip(&c(3, "b")).unwrap();
+        assert_eq!(st.clips_between(0, 10).unwrap(), vec![c(1, "a"), c(3, "b")]);
+        st.delete_between(0, 10).unwrap();
+        assert!(st.clips_between(0, 10).unwrap().is_empty());
     }
 
     #[test]

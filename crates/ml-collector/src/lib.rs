@@ -7,9 +7,28 @@ mod system;
 #[cfg(windows)]
 mod windows_active;
 #[cfg(windows)]
+mod windows_clipboard;
+#[cfg(windows)]
 mod windows_power;
 
 pub use system::SystemCollector;
+#[cfg(windows)]
+pub use windows_clipboard::ClipboardWatcher;
+
+/// На других системах буфер обмена не отслеживается.
+#[cfg(not(windows))]
+pub struct ClipboardWatcher;
+
+#[cfg(not(windows))]
+impl ClipboardWatcher {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn poll(&mut self) -> Option<String> {
+        None
+    }
+}
 
 pub trait Collector: Send {
     /// Один опрос источника. `None`, если сейчас снять нечего.

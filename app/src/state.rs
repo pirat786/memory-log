@@ -93,7 +93,7 @@ impl AppState {
     pub fn day_summary(&self, date: Option<&str>) -> Result<DaySummary, String> {
         let date = parse_date(date)?;
         let (from, to) = time::day_bounds(date);
-        let (samples, bookmarks, system, procs, goals) = {
+        let (samples, bookmarks, system, procs, goals, clips) = {
             let st = self.storage.lock().map_err(|e| e.to_string())?;
             let e = |e: ml_storage::StorageError| e.to_string();
             (
@@ -102,6 +102,7 @@ impl AppState {
                 st.system_between(from, to).map_err(e)?,
                 st.procs_between(from, to).map_err(e)?,
                 st.goals().map_err(e)?,
+                st.clips_between(from, to).map_err(e)?,
             )
         };
         let sessions = sessions::sessionize(&samples, &self.categorizer);
@@ -112,6 +113,7 @@ impl AppState {
             system: &system,
             procs: &procs,
             downloads: self.downloads(from, to),
+            clips,
             goals: &goals,
         }))
     }

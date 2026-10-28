@@ -10,6 +10,6 @@ pub mod summary;
 pub mod time;
 
 pub use categorize::Categorizer;
-pub use model::{Bookmark, Category, Download, Goal, ProcSample, Sample, SearchHit, Session, SystemSample, Timestamp};
+pub use model::{Bookmark, Category, ClipEntry, Download, Goal, ProcSample, Sample, SearchHit, Session, SystemSample, Timestamp};
 pub use privacy::PrivacyFilter;
 pub use summary::{DayInput, DaySummary, WeekDay};
