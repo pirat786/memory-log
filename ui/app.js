@@ -12,6 +12,8 @@ const CATEGORY_NAMES = {
 };
 
 let current = new Date();
+// Пока открыт «Сегодня», после полуночи окно само переходит на новый день.
+let followToday = true;
 
 const $ = (id) => document.getElementById(id);
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -135,6 +137,7 @@ async function renderWeek() {
 }
 
 async function render() {
+  if (followToday) current = new Date();
   const isToday = iso(current) === iso(new Date());
   $("date").textContent = isToday ? "Сегодня" : current.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
   $("next").disabled = isToday;
@@ -196,8 +199,12 @@ function toolMessage(text) {
   $("toolMsg").textContent = text;
 }
 
-$("prev").onclick = () => { current.setDate(current.getDate() - 1); render(); };
-$("next").onclick = () => { current.setDate(current.getDate() + 1); render(); };
+$("prev").onclick = () => { followToday = false; current.setDate(current.getDate() - 1); render(); };
+$("next").onclick = () => {
+  current.setDate(current.getDate() + 1);
+  followToday = iso(current) === iso(new Date());
+  render();
+};
 
 $("mark").onclick = async () => {
   $("noteText").value = "";

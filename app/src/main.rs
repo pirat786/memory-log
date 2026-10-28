@@ -14,6 +14,8 @@ use tauri_plugin_autostart::MacosLauncher;
 use crate::state::AppState;
 
 fn main() {
+    // Программа без консоли: причину падения иначе не увидеть.
+    std::panic::set_hook(Box::new(|info| log::info(&format!("паника: {info}"))));
     tauri::Builder::default()
         // Вторая копия не запускается, а показывает окно первой: две программы
         // не должны одновременно писать в одну базу.

@@ -1,19 +1,12 @@
-use std::mem::size_of;
-
 use ml_core::Sample;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HWND};
-use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
 
 use crate::Collector;
-
-/// Столько миллисекунд без ввода — считаем, что человек отошёл.
-const IDLE_AFTER_MS: u32 = 120_000;
 
 pub struct ActiveWindowCollector;
 
@@ -30,7 +23,6 @@ impl Collector for ActiveWindowCollector {
             ts: chrono::Utc::now().timestamp(),
             app,
             title,
-            idle: unsafe { is_idle() },
         })
     }
 }
@@ -62,13 +54,4 @@ unsafe fn process_name(pid: u32) -> Option<String> {
     let path = String::from_utf16_lossy(&buf[..len as usize]);
     let file = path.rsplit('\\').next()?;
     Some(file.trim_end_matches(".exe").to_string())
-}
-
-unsafe fn is_idle() -> bool {
-    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
-    if GetLastInputInfo(&mut info).as_bool() {
-        GetTickCount().wrapping_sub(info.dwTime) > IDLE_AFTER_MS
-    } else {
-        false
-    }
 }

@@ -9,8 +9,6 @@ pub struct Sample {
     pub ts: Timestamp,
     pub app: String,
     pub title: String,
-    /// Пользователь не трогал мышь и клавиатуру дольше порога.
-    pub idle: bool,
 }
 
 /// Отметка «запомнить это», поставленная пользователем.

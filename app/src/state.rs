@@ -60,6 +60,11 @@ impl AppState {
     /// откладывает файл и начинает новую базу, чтобы запись не останавливалась.
     pub fn recover_database(&self) {
         let Ok(mut storage) = self.storage.lock() else { return };
+        // Windows не даёт переименовать файл, пока он открыт, поэтому сначала закрываем
+        // старое соединение (подменяем его временной базой в памяти).
+        if let Ok(placeholder) = Storage::open_in_memory() {
+            drop(std::mem::replace(&mut *storage, placeholder));
+        }
         match Storage::open_or_recover(&self.db_path) {
             Ok((fresh, moved)) => {
                 if let Some(moved) = moved {

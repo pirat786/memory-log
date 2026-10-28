@@ -27,12 +27,22 @@ pub fn spawn(state: Arc<AppState>) {
         let mut windows = ml_collector::default_collector();
         let mut system = SystemCollector::new();
         let privacy = PrivacyFilter::default();
-        let mut last_system = Instant::now() - SYSTEM_TICK;
-        let mut last_prune = Instant::now() - PRUNE_EVERY;
+        // Instant отсчитывается от запуска Windows, поэтому вычитание из него паникует,
+        // если ПК включён недавно. Берём «давно» через checked_sub.
+        let long_ago = |d: Duration| Instant::now().checked_sub(d).unwrap_or_else(Instant::now);
+        let mut last_system = long_ago(SYSTEM_TICK);
+        let mut last_prune = long_ago(PRUNE_EVERY);
         let mut errors = 0u32;
         log::info("сборщик запущен");
 
+        let mut last_tick = Instant::now();
         loop {
+            // Если поток «проспал» намного дольше обычного (сон ПК, троттлинг Windows), пишем это в журнал.
+            let slept = last_tick.elapsed();
+            last_tick = Instant::now();
+            if slept > Duration::from_secs(30) {
+                log::info(&format!("сборщик не работал {} сек (сон ПК или замедление Windows)", slept.as_secs()));
+            }
             if last_prune.elapsed() >= PRUNE_EVERY {
                 last_prune = Instant::now();
                 let now = Utc::now().timestamp();
