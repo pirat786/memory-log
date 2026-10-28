@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_audio_reserved.sql"),
     include_str!("../migrations/003_system_metrics.sql"),
+    include_str!("../migrations/004_drop_idle.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +63,7 @@ fn quarantine(path: &Path) -> Result<std::path::PathBuf> {
 }
 
 fn read_sample(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
-    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)?, idle: r.get(3)? })
+    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)? })
 }
 
 impl Storage {
@@ -114,8 +115,8 @@ impl Storage {
 
     pub fn insert_sample(&self, s: &Sample) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO samples (ts, app, title, idle) VALUES (?1, ?2, ?3, ?4)",
-            params![s.ts, s.app, s.title, s.idle],
+            "INSERT INTO samples (ts, app, title) VALUES (?1, ?2, ?3)",
+            params![s.ts, s.app, s.title],
         )?;
         Ok(())
     }
@@ -123,13 +124,13 @@ impl Storage {
     pub fn samples_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<Sample>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT ts, app, title, idle FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
+            .prepare("SELECT ts, app, title FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
         let rows = stmt.query_map(params![from, to], read_sample)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn last_sample(&self) -> Result<Option<Sample>> {
-        let mut stmt = self.conn.prepare("SELECT ts, app, title, idle FROM samples ORDER BY ts DESC LIMIT 1")?;
+        let mut stmt = self.conn.prepare("SELECT ts, app, title FROM samples ORDER BY ts DESC LIMIT 1")?;
         let mut rows = stmt.query_map([], read_sample)?;
         Ok(rows.next().transpose()?)
     }
@@ -240,7 +241,7 @@ impl Storage {
             return Ok(vec![]);
         }
         let mut stmt = self.conn.prepare(
-            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples WHERE idle = 0
+            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples
              GROUP BY app, title ORDER BY MAX(ts) DESC",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -283,7 +284,7 @@ mod tests {
     use super::*;
 
     fn sample(ts: i64, app: &str, title: &str) -> Sample {
-        Sample { ts, app: app.into(), title: title.into(), idle: false }
+        Sample { ts, app: app.into(), title: title.into() }
     }
 
     #[test]

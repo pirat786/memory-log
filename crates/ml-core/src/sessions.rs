@@ -2,11 +2,13 @@ use crate::categorize::Categorizer;
 use crate::model::{Sample, Session};
 
 /// Если между снимками больше этого времени, считаем, что программа не работала.
-pub const MAX_GAP_SECS: i64 = 30;
+/// Снимки идут раз в 3 секунды, но Windows может притормаживать фоновую программу,
+/// поэтому запас большой: иначе каждая задержка «съедает» время.
+pub const MAX_GAP_SECS: i64 = 90;
 /// Сколько длится последний снимок, у которого нет следующего.
 pub const TAIL_SECS: i64 = 3;
 
-/// Склеивает снимки в непрерывные сессии. Простой в сессии не попадает.
+/// Склеивает снимки в непрерывные сессии. Время идёт непрерывно, пока работает программа.
 /// `samples` должны быть отсортированы по времени.
 pub fn sessionize(samples: &[Sample], categorizer: &Categorizer) -> Vec<Session> {
     let mut out: Vec<Session> = Vec::new();
@@ -15,7 +17,8 @@ pub fn sessionize(samples: &[Sample], categorizer: &Categorizer) -> Vec<Session>
             Some(next) => (next.ts - s.ts).clamp(0, MAX_GAP_SECS),
             None => TAIL_SECS,
         };
-        if s.idle || dur == 0 {
+        // Время идёт всё время, пока ПК включён и программа работает; простой не вычитается.
+        if dur == 0 {
             continue;
         }
         if let Some(last) = out.last_mut() {
@@ -39,29 +42,38 @@ pub fn sessionize(samples: &[Sample], categorizer: &Categorizer) -> Vec<Session>
 mod tests {
     use super::*;
 
-    fn sample(ts: i64, app: &str, title: &str, idle: bool) -> Sample {
-        Sample { ts, app: app.into(), title: title.into(), idle }
+    fn sample(ts: i64, app: &str, title: &str) -> Sample {
+        Sample { ts, app: app.into(), title: title.into() }
     }
 
     #[test]
-    fn merges_same_window_and_skips_idle() {
+    fn merges_same_window_and_counts_everything() {
         let c = Categorizer::with_defaults();
         let samples = vec![
-            sample(0, "winword", "a", false),
-            sample(3, "winword", "a", false),
-            sample(6, "winword", "a", true),
-            sample(9, "chrome", "b", false),
+            sample(0, "winword", "a"),
+            sample(3, "winword", "a"),
+            sample(6, "winword", "a"),
+            sample(9, "chrome", "b"),
         ];
         let s = sessionize(&samples, &c);
         assert_eq!(s.len(), 2);
-        assert_eq!((s[0].start, s[0].end), (0, 6));
+        assert_eq!((s[0].start, s[0].end), (0, 9));
         assert_eq!(s[1].app, "chrome");
+    }
+
+    #[test]
+    fn delayed_snapshots_still_count() {
+        let c = Categorizer::with_defaults();
+        let samples = vec![sample(0, "a", "t"), sample(60, "a", "t"), sample(120, "a", "t")];
+        let s = sessionize(&samples, &c);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].end - s[0].start, 123);
     }
 
     #[test]
     fn long_gap_breaks_session() {
         let c = Categorizer::with_defaults();
-        let samples = vec![sample(0, "a", "t", false), sample(600, "a", "t", false)];
+        let samples = vec![sample(0, "a", "t"), sample(600, "a", "t")];
         assert_eq!(sessionize(&samples, &c).len(), 2);
     }
 }
