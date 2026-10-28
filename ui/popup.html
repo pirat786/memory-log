@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>Буфер обмена</title>
+  <title>Clipboard</title>
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: #1d2029; color: #e8eaf0;
@@ -19,9 +19,10 @@
   </style>
 </head>
 <body>
-  <div class="head"><span>Буфер обмена</span><span id="pos"></span></div>
+  <div class="head"><span data-i18n="popup.title"></span><span id="pos"></span></div>
   <div id="rows"></div>
-  <div class="foot">Ctrl+Alt+↑ / ↓ — листать. Выбранное уже в буфере: вставляйте Ctrl+V.</div>
+  <div class="foot" data-i18n="popup.foot"></div>
+  <script src="i18n.js"></script>
   <script>
     const VISIBLE = 4;
     const rows = document.getElementById("rows");
@@ -33,7 +34,7 @@
         pos.textContent = "";
         const e = document.createElement("div");
         e.className = "empty";
-        e.textContent = "История буфера пока пуста";
+        e.textContent = I18N.t("popup.empty");
         return rows.append(e);
       }
       pos.textContent = `${sel + 1} из ${items.length}`;
@@ -53,9 +54,11 @@
       });
     }
 
-    window.__TAURI__.event.listen("clip-nav", (e) => render(e.payload));
     // Плашка создаётся при первом нажатии и может пропустить событие: забираем последнее состояние сама.
-    window.__TAURI__.core.invoke("clip_nav_state").then((p) => p && render(p));
+    I18N.init().then(() => {
+      window.__TAURI__.event.listen("clip-nav", (e) => render(e.payload));
+      window.__TAURI__.core.invoke("clip_nav_state").then((p) => p && render(p));
+    });
   </script>
 </body>
 </html>

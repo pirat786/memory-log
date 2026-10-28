@@ -4,14 +4,20 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::App;
 
+use crate::i18n;
 use crate::state::AppState;
 
 pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Открыть сводку", true, None::<&str>)?;
-    let mark = MenuItem::with_id(app, "mark", "Запомнить это", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause", "Пауза / продолжить", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+    let lang = state.lang();
+    let item = |id: &str, key: &str| MenuItem::with_id(app, id, i18n::t(&lang, key), true, None::<&str>);
+    let open = item("open", "tray.open")?;
+    let mark = item("mark", "tray.mark")?;
+    let pause = item("pause", "tray.pause")?;
+    let quit = item("quit", "tray.quit")?;
     let menu = Menu::with_items(app, &[&open, &mark, &pause, &quit])?;
+    if let Ok(mut items) = state.tray_items.lock() {
+        items.extend([("tray.open", open), ("tray.mark", mark), ("tray.pause", pause), ("tray.quit", quit)]);
+    }
 
     let mut builder = TrayIconBuilder::new().menu(&menu).tooltip("Memory Log");
     if let Some(icon) = app.default_window_icon() {

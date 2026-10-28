@@ -1,15 +1,12 @@
 const { invoke } = window.__TAURI__.core;
+const t = (key, params) => I18N.t(key, params);
 
-const CATEGORY_NAMES = {
-  work: "Работа и документы",
-  communication: "Общение",
-  social: "Соцсети",
-  entertainment: "Видео и развлечения",
-  shopping: "Покупки",
-  study: "Учёба",
-  games: "Игры",
-  other: "Другое",
-};
+const CATEGORIES = ["work", "communication", "social", "entertainment", "shopping", "study", "games", "other"];
+const categoryName = (c) => (CATEGORIES.includes(c) ? t(`cat.${c}`) : c);
+
+// Так программа хранит название скрытого окна (см. ml-core/privacy.rs); показываем его на языке интерфейса.
+const HIDDEN_APP = "(скрыто)";
+const appName = (a) => (a === HIDDEN_APP ? t("hidden") : a);
 
 let current = new Date();
 // Пока открыт «Сегодня», после полуночи окно само переходит на новый день.
@@ -17,19 +14,19 @@ let followToday = true;
 
 const $ = (id) => document.getElementById(id);
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-const clock = (ts) => new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString(I18N.locale, { hour: "2-digit", minute: "2-digit" });
 const pct = (v) => `${Math.round(v)}%`;
 
 function duration(secs) {
   const h = Math.floor(secs / 3600);
   const m = Math.round((secs % 3600) / 60);
-  if (h && m) return `${h} ч ${m} мин`;
-  if (h) return `${h} ч`;
-  return `${m} мин`;
+  if (h && m) return `${h} ${t("unit.h")} ${m} ${t("unit.min")}`;
+  if (h) return `${h} ${t("unit.h")}`;
+  return `${m} ${t("unit.min")}`;
 }
 
 function bytes(n) {
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const units = t("unit.bytes").split(",");
   let i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return `${n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
@@ -48,7 +45,7 @@ function note(text) {
 
 function bars(target, rows) {
   target.replaceChildren();
-  if (!rows.length) return target.append(note("Пока нет данных"));
+  if (!rows.length) return target.append(note(t("common.nodata")));
   const max = Math.max(...rows.map((r) => r.secs), 1);
   for (const r of rows) {
     const row = el("div", "bar");
@@ -79,26 +76,32 @@ function cards(target, items, emptyText) {
 
 function renderRhythm(r) {
   if (!r) return "";
-  const parts = [`с ${clock(r.first_ts)} до ${clock(r.last_ts)}`];
-  parts.push(r.breaks.length ? `перерывов: ${r.breaks.length} (${duration(r.break_secs)})` : "без долгих перерывов");
-  parts.push(`переключений между программами: ${r.switches}`);
-  if (r.longest_focus_secs >= 60) parts.push(`самый долгий фокус: ${duration(r.longest_focus_secs)}`);
+  const parts = [t("rhythm.range", { from: clock(r.first_ts), to: clock(r.last_ts) })];
+  parts.push(r.breaks.length
+    ? t("rhythm.breaks", { n: r.breaks.length, v: duration(r.break_secs) })
+    : t("rhythm.nobreaks"));
+  parts.push(t("rhythm.switches", { n: r.switches }));
+  if (r.longest_focus_secs >= 60) parts.push(t("rhythm.focus", { v: duration(r.longest_focus_secs) }));
   return parts.join(" · ");
+}
+
+function loadRange(r) {
+  return t("load.range", { min: pct(r.min), max: pct(r.max), time: clock(r.max_ts) });
 }
 
 function renderLoad(load) {
   cards($("load"), load ? [
-    ["Процессор", `${pct(load.cpu.avg)} в среднем`, `мин ${pct(load.cpu.min)} · макс ${pct(load.cpu.max)} в ${clock(load.cpu.max_ts)}`],
-    ["Память (ОЗУ)", `${pct(load.mem.avg)} в среднем`, `мин ${pct(load.mem.min)} · макс ${pct(load.mem.max)} в ${clock(load.mem.max_ts)}`],
-  ] : [], "Данные о нагрузке появятся через несколько секунд после запуска");
+    [t("load.cpu"), t("load.avg", { v: pct(load.cpu.avg) }), loadRange(load.cpu)],
+    [t("load.mem"), t("load.avg", { v: pct(load.mem.avg) }), loadRange(load.mem)],
+  ] : [], t("load.empty"));
 }
 
 function renderNet(net) {
   cards($("net"), net ? [
-    ["Получено", bytes(net.rx_total), "скачано из интернета"],
-    ["Отправлено", bytes(net.tx_total), "загружено в интернет"],
-    ["Пик трафика", net.peak_hour === null ? "—" : `${String(net.peak_hour).padStart(2, "0")}:00`, "самый активный час"],
-  ] : [], "Пока нет данных");
+    [t("net.rx"), bytes(net.rx_total), t("net.rx_sub")],
+    [t("net.tx"), bytes(net.tx_total), t("net.tx_sub")],
+    [t("net.peak"), net.peak_hour === null ? "—" : `${String(net.peak_hour).padStart(2, "0")}:00`, t("net.peak_sub")],
+  ] : [], t("common.nodata"));
 
   const chart = $("hours");
   chart.replaceChildren();
@@ -115,16 +118,20 @@ function renderNet(net) {
 function renderHealth(h) {
   const rows = [];
   if (h) {
-    rows.push(`Компьютер работает без перезагрузки: ${duration(h.uptime_secs)}`);
+    rows.push(t("health.uptime", { v: duration(h.uptime_secs) }));
     if (h.disk_free_start !== null && h.disk_free_end !== null) {
       const diff = h.disk_free_end - h.disk_free_start;
-      rows.push(`Свободно на диске C: ${h.disk_free_end.toFixed(1)} ГБ (${diff >= 0 ? "+" : ""}${diff.toFixed(1)} ГБ за день)`);
+      rows.push(t("health.disk", {
+        free: h.disk_free_end.toFixed(1),
+        diff: `${diff >= 0 ? "+" : ""}${diff.toFixed(1)}`,
+        gb: t("unit.gb"),
+      }));
     }
-    if (h.battery_min !== null && h.battery_min < 100) rows.push(`Заряд батареи опускался до ${h.battery_min}%`);
-    if (h.on_battery_secs > 0) rows.push(`Работал от батареи: ${duration(h.on_battery_secs)}`);
-    if (h.temp_max !== null) rows.push(`Максимальная температура: ${Math.round(h.temp_max)} °C`);
+    if (h.battery_min !== null && h.battery_min < 100) rows.push(t("health.battery_min", { v: h.battery_min }));
+    if (h.on_battery_secs > 0) rows.push(t("health.on_battery", { v: duration(h.on_battery_secs) }));
+    if (h.temp_max !== null) rows.push(t("health.temp", { v: Math.round(h.temp_max) }));
   }
-  list($("health"), rows, "Пока нет данных");
+  list($("health"), rows, t("common.nodata"));
 }
 
 const HISTORY_LIMIT = 300;
@@ -136,19 +143,13 @@ let tab = "windows";
 let clipSel = 0;
 let clipRows = [];
 
-const TABS = {
-  windows: { placeholder: "Фильтр по программе или названию окна…", note: "" },
-  clips: {
-    placeholder: "Фильтр по скопированному тексту или программе…",
-    note: "Что вы копировали за день. Пароли из менеджеров паролей и окна с банками не записываются.",
-  },
-  all: { placeholder: "Например: рецепт, договор, youtube…", note: "Ищет по программам и названиям окон за всё время." },
-};
+const tabPlaceholder = (name) => t(`hist.ph.${name}`);
+const tabNoteText = (name) => (name === "windows" ? "" : t(`hist.note.${name}`));
 
 const matches = (q, ...fields) => !q || fields.some((f) => f.toLowerCase().includes(q));
 
 function shortDuration(secs) {
-  return secs < 60 ? `${secs} с` : duration(secs);
+  return secs < 60 ? `${secs} ${t("unit.sec")}` : duration(secs);
 }
 
 function historyRow(time, text, tail, button) {
@@ -161,20 +162,23 @@ function historyRow(time, text, tail, button) {
 }
 
 async function copyText(text, btn) {
-  let label = "Скопировано";
+  let ok = true;
   try {
     await navigator.clipboard.writeText(text);
   } catch {
-    label = "Не удалось";
+    ok = false;
   }
-  if (!btn) return $("tabNote").textContent = label === "Скопировано" ? "Скопировано в буфер обмена" : "Не удалось скопировать";
-  btn.textContent = label;
-  setTimeout(() => (btn.textContent = "Копировать"), 1500);
+  if (!btn) {
+    $("tabNote").textContent = ok ? t("clip.copied_note") : t("clip.copy_failed");
+    return;
+  }
+  btn.textContent = ok ? t("clip.copied") : t("clip.failed");
+  setTimeout(() => (btn.textContent = t("clip.copy")), 1500);
 }
 
 function deleteButton(text) {
-  const btn = el("button", "small", "Удалить");
-  btn.title = "Удалить эту запись из истории буфера";
+  const btn = el("button", "small", t("clip.delete"));
+  btn.title = t("clip.delete_title");
   btn.onclick = async (e) => {
     e.stopPropagation();
     await invoke("delete_clip", { text });
@@ -185,15 +189,13 @@ function deleteButton(text) {
 }
 
 function copyButton(text) {
-  const btn = el("button", "small", "Копировать");
+  const btn = el("button", "small", t("clip.copy"));
   btn.onclick = (e) => { e.stopPropagation(); copyText(text, btn); };
   return btn;
 }
 
 function clipHint() {
-  return clipRows.length
-    ? `Выбрано ${clipSel + 1} из ${clipRows.length}. Ctrl+↑ / Ctrl+↓ — выбрать, Enter — скопировать.`
-    : TABS.clips.note;
+  return clipRows.length ? t("clip.hint", { n: clipSel + 1, total: clipRows.length }) : tabNoteText("clips");
 }
 
 // Одна лента на три режима: окна дня, буфер обмена и поиск по всем дням.
@@ -207,40 +209,40 @@ function renderHistory() {
   let empty;
   if (tab === "windows") {
     rows = timelineData
-      .filter((s) => matches(q, s.app, s.title))
-      .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${s.app} — ${s.title}` : s.app, shortDuration(s.end - s.start)));
-    empty = q ? "Ничего не найдено за этот день" : "За этот день пока нет записей";
+      .filter((s) => matches(q, appName(s.app), s.title))
+      .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${appName(s.app)} — ${s.title}` : appName(s.app), shortDuration(s.end - s.start)));
+    empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
-    clipRows = clipData.filter((c) => matches(q, c.app, c.text));
+    clipRows = clipData.filter((c) => matches(q, appName(c.app), c.text));
     clipSel = Math.min(clipSel, Math.max(clipRows.length - 1, 0));
     rows = clipRows.map((c, i) => {
       const buttons = el("span", "btns");
       buttons.append(copyButton(c.text), deleteButton(c.text));
-      const row = historyRow(`${clock(c.ts)} · ${c.app}`, c.text, "", buttons);
+      const row = historyRow(`${clock(c.ts)} · ${appName(c.app)}`, c.text, "", buttons);
       row.classList.toggle("selected", i === clipSel);
       row.onclick = () => { clipSel = i; renderHistory(); };
       return row;
     });
     $("tabNote").textContent = clipHint();
     $("clearClips").hidden = false;
-    empty = q ? "Ничего не найдено за этот день" : "За этот день ничего не копировали";
+    empty = q ? t("hist.empty.day_q") : t("hist.empty.clips");
   } else {
-    const day = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-    rows = allHits.map((h) => historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${h.app} — ${h.title}` : h.app, ""));
-    empty = q ? "Ничего не найдено" : "Введите запрос, чтобы искать по всей истории";
+    const day = (ts) => new Date(ts * 1000).toLocaleDateString(I18N.locale, { day: "numeric", month: "short" });
+    rows = allHits.map((h) => historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${appName(h.app)} — ${h.title}` : appName(h.app), ""));
+    empty = q ? t("hist.empty.all_q") : t("hist.empty.all");
   }
 
   if (!rows.length) return target.append(note(empty));
   target.append(...rows.slice(0, HISTORY_LIMIT));
-  if (rows.length > HISTORY_LIMIT) target.append(note(`Показаны первые ${HISTORY_LIMIT} из ${rows.length}. Уточните запрос.`));
+  if (rows.length > HISTORY_LIMIT) target.append(note(t("hist.more", { n: HISTORY_LIMIT, total: rows.length })));
 }
 
 function setTab(name) {
   tab = name;
   clipSel = 0;
   for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
-  $("q").placeholder = TABS[name].placeholder;
-  $("tabNote").textContent = TABS[name].note;
+  $("q").placeholder = tabPlaceholder(name);
+  $("tabNote").textContent = tabNoteText(name);
   searchAll();
   renderHistory();
 }
@@ -248,7 +250,7 @@ function setTab(name) {
 async function renderWeek() {
   const days = await invoke("week_overview");
   bars($("week"), days.map((d) => ({
-    label: new Date(d.date + "T00:00:00").toLocaleDateString("ru-RU", { weekday: "short", day: "numeric" }),
+    label: new Date(d.date + "T00:00:00").toLocaleDateString(I18N.locale, { weekday: "short", day: "numeric" }),
     secs: d.active_secs,
     value: d.active_secs ? duration(d.active_secs) : "—",
   })));
@@ -257,7 +259,7 @@ async function renderWeek() {
 async function render() {
   if (followToday) current = new Date();
   const isToday = iso(current) === iso(new Date());
-  $("date").textContent = isToday ? "Сегодня" : current.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  $("date").textContent = isToday ? t("nav.today") : current.toLocaleDateString(I18N.locale, { day: "numeric", month: "long" });
   $("next").disabled = isToday;
 
   const s = await invoke("day_summary", { date: iso(current) });
@@ -268,28 +270,33 @@ async function render() {
   clipData = s.clips;
   renderHistory();
 
-  bars($("categories"), s.by_category.map((c) => ({ label: CATEGORY_NAMES[c.category] ?? c.category, secs: c.secs })));
-  bars($("apps"), s.top_apps.map((a) => ({ label: a.app, secs: a.secs })));
+  bars($("categories"), s.by_category.map((c) => ({ label: categoryName(c.category), secs: c.secs })));
+  bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs })));
   bars($("goals"), s.goals.map((g) => ({
-    label: CATEGORY_NAMES[g.category] ?? g.category,
+    label: categoryName(g.category),
     secs: Math.min(g.used_mins, g.limit_mins) * 60,
     over: g.used_mins > g.limit_mins,
-    value: `${g.used_mins} из ${g.limit_mins} мин`,
+    value: t("goal.value", { used: g.used_mins, limit: g.limit_mins }),
   })));
-  if (!s.goals.length) $("goals").replaceChildren(note("Например: не больше 60 минут в соцсетях"));
+  if (!s.goals.length) $("goals").replaceChildren(note(t("goal.example")));
 
-  list($("focus"), s.focus_blocks.map((b) => `${b.app}: ${clock(b.start)}–${clock(b.end)} (${duration(b.end - b.start)})`),
-    "Длинных занятий пока нет");
-  list($("bookmarks"), s.bookmarks.map((b) => `${clock(b.ts)} · ${b.app}${b.title ? " — " + b.title : ""}${b.note ? " · " + b.note : ""}`),
-    "Нажмите «Запомнить это», чтобы сохранить важный момент");
+  list($("focus"), s.focus_blocks.map((b) => `${appName(b.app)}: ${clock(b.start)}–${clock(b.end)} (${duration(b.end - b.start)})`),
+    t("focus.empty"));
+  list($("bookmarks"), s.bookmarks.map((b) => `${clock(b.ts)} · ${appName(b.app)}${b.title ? " — " + b.title : ""}${b.note ? " · " + b.note : ""}`),
+    t("bookmarks.empty"));
 
   renderLoad(s.load);
   renderNet(s.net);
-  list($("procs"), s.procs.map((p) =>
-    `${p.name}: процессор до ${pct(p.max_cpu)} в ${clock(p.max_cpu_ts)}, память до ${p.max_mem_mb} МБ в ${clock(p.max_mem_ts)}`),
-    "Пока нет данных");
+  list($("procs"), s.procs.map((p) => t("proc.line", {
+    name: p.name,
+    cpu: pct(p.max_cpu),
+    cpu_time: clock(p.max_cpu_ts),
+    mem: p.max_mem_mb,
+    mb: t("unit.mb"),
+    mem_time: clock(p.max_mem_ts),
+  })), t("common.nodata"));
   renderHealth(s.health);
-  list($("downloads"), s.downloads.map((d) => `${clock(d.ts)} · ${d.name} (${bytes(d.size)})`), "За этот день ничего не скачано");
+  list($("downloads"), s.downloads.map((d) => `${clock(d.ts)} · ${d.name} (${bytes(d.size)})`), t("downloads.empty"));
 }
 
 async function refreshStatus() {
@@ -298,15 +305,15 @@ async function refreshStatus() {
   const stale = st.last_sample_age_secs === null || st.last_sample_age_secs > 30;
   if (st.paused) {
     e.className = "status bad";
-    e.textContent = "На паузе";
+    e.textContent = t("status.paused");
   } else if (stale) {
     e.className = "status bad";
-    e.textContent = st.last_sample_age_secs === null ? "Записей ещё нет" : `Нет новых записей ${duration(st.last_sample_age_secs)}`;
+    e.textContent = st.last_sample_age_secs === null ? t("status.none") : t("status.stale", { age: duration(st.last_sample_age_secs) });
   } else {
     e.className = "status ok";
-    e.textContent = "Запись идёт";
+    e.textContent = t("status.ok");
   }
-  $("pause").textContent = st.paused ? "▶ Продолжить" : "⏸ Пауза";
+  $("pause").textContent = st.paused ? t("btn.resume") : t("btn.pause");
 }
 
 function ask(dialog) {
@@ -352,26 +359,26 @@ $("addGoal").onclick = async () => {
 
 $("export").onclick = async () => {
   try {
-    toolMessage(`Сохранено: ${await invoke("export_day_csv", { date: iso(current) })}`);
+    toolMessage(t("tools.saved", { path: await invoke("export_day_csv", { date: iso(current) }) }));
   } catch (e) {
-    toolMessage(`Не удалось сохранить: ${e}`);
+    toolMessage(t("tools.save_failed", { err: e }));
   }
 };
 
 $("forget").onclick = async () => {
-  if (!window.confirm("Удалить всё, что записано за последние 10 минут?")) return;
+  if (!window.confirm(t("tools.forget_confirm"))) return;
   await invoke("forget_minutes", { minutes: 10 });
-  toolMessage("Последние 10 минут удалены");
+  toolMessage(t("tools.forgot"));
   render();
 };
 
 $("autostart").onchange = async (e) => {
   try {
     await invoke("set_autostart", { enabled: e.target.checked });
-    toolMessage(e.target.checked ? "Программа будет запускаться вместе с Windows" : "Автозапуск выключен");
+    toolMessage(e.target.checked ? t("tools.autostart_on") : t("tools.autostart_off"));
   } catch (err) {
     e.target.checked = !e.target.checked;
-    toolMessage(`Не удалось изменить автозапуск: ${err}`);
+    toolMessage(t("tools.autostart_failed", { err }));
   }
 };
 
@@ -396,7 +403,7 @@ $("q").oninput = () => {
   searchAll();
 };
 $("clearClips").onclick = async () => {
-  if (!window.confirm("Удалить всю историю буфера обмена за все дни? Это нельзя отменить.")) return;
+  if (!window.confirm(t("clip.clear_confirm"))) return;
   await invoke("clear_clips");
   clipData = [];
   renderHistory();
@@ -415,13 +422,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 for (const b of document.querySelectorAll(".tab")) b.onclick = () => setTab(b.dataset.tab);
-setTab("windows");
-
-for (const [value, name] of Object.entries(CATEGORY_NAMES)) {
-  const o = el("option", "", name);
-  o.value = value;
-  $("goalCat").append(o);
-}
 
 // Любая ошибка показывается на странице, а не оставляет её пустой.
 async function guarded(task) {
@@ -431,11 +431,43 @@ async function guarded(task) {
     box.hidden = true;
   } catch (e) {
     box.hidden = false;
-    box.textContent = `Не удалось загрузить данные: ${typeof e === "string" ? e : JSON.stringify(e)}`;
+    box.textContent = t("err.load", { err: typeof e === "string" ? e : JSON.stringify(e) });
   }
 }
 
+// Выпадающие списки, текст которых зависит от языка.
+function fillLanguageControls() {
+  const goalCat = $("goalCat");
+  const selected = goalCat.value;
+  goalCat.replaceChildren(...CATEGORIES.map((c) => {
+    const o = el("option", "", categoryName(c));
+    o.value = c;
+    return o;
+  }));
+  if (selected) goalCat.value = selected;
+
+  const lang = $("lang");
+  lang.replaceChildren(...I18N.languages.map((l) => {
+    const o = el("option", "", l.name);
+    o.value = l.code;
+    return o;
+  }));
+  lang.value = I18N.code;
+}
+
+$("lang").onchange = async (e) => {
+  await I18N.setLanguage(e.target.value);
+  fillLanguageControls();
+  setTab(tab);
+  await guarded(render);
+  await guarded(renderWeek);
+  await guarded(refreshStatus);
+};
+
 async function start() {
+  await I18N.init();
+  fillLanguageControls();
+  setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
   await guarded(render);
   await guarded(renderWeek);

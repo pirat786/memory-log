@@ -3,6 +3,7 @@
 mod clip_nav;
 mod collector_loop;
 mod commands;
+mod i18n;
 mod log;
 mod state;
 mod tray;
@@ -69,6 +70,8 @@ fn main() {
             commands::set_paused,
             commands::status,
             commands::clip_nav_state,
+            commands::get_language,
+            commands::set_language,
             commands::delete_clip,
             commands::clear_clips,
             commands::export_day_csv,

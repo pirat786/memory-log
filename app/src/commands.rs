@@ -44,6 +44,16 @@ pub fn set_paused(state: Shared, paused: bool) {
 }
 
 #[tauri::command]
+pub fn get_language(state: Shared) -> String {
+    state.lang()
+}
+
+#[tauri::command]
+pub fn set_language(state: Shared, code: String) -> Result<(), String> {
+    state.set_language(&code)
+}
+
+#[tauri::command]
 pub fn delete_clip(state: Shared, text: String) -> Result<(), String> {
     state.delete_clip(&text)
 }

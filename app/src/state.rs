@@ -10,6 +10,7 @@ use ml_core::{sessions, summary, time, Bookmark, Categorizer, Category, DayInput
 use ml_storage::Storage;
 use serde::Serialize;
 
+use crate::i18n;
 use crate::log;
 
 #[derive(Serialize)]
@@ -38,11 +39,14 @@ pub struct AppState {
     pub clip_payload: Mutex<Option<serde_json::Value>>,
     downloads_dir: Option<PathBuf>,
     db_path: PathBuf,
+    language: Mutex<String>,
+    /// Пункты меню трея: при смене языка их подписи обновляются.
+    pub tray_items: Mutex<Vec<(&'static str, tauri::menu::MenuItem<tauri::Wry>)>>,
 }
 
-fn parse_date(date: Option<&str>) -> Result<NaiveDate, String> {
+fn parse_date(date: Option<&str>, lang: &str) -> Result<NaiveDate, String> {
     match date {
-        Some(d) => d.parse().map_err(|e| format!("неверная дата: {e}")),
+        Some(d) => d.parse().map_err(|e| i18n::t_with(lang, "err.bad_date", &[("err", &format!("{e}"))])),
         None => Ok(time::today()),
     }
 }
@@ -55,7 +59,43 @@ fn fmt_ts(ts: i64) -> String {
     Local.timestamp_opt(ts, 0).single().map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()
 }
 
+/// Файл с выбранным языком лежит рядом с базой. Нет файла — берём язык Windows.
+fn language_file(db_path: &Path) -> PathBuf {
+    db_path.with_file_name("language.txt")
+}
+
+fn initial_language(db_path: &Path) -> String {
+    fs::read_to_string(language_file(db_path))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|c| i18n::is_supported(c))
+        .unwrap_or_else(i18n::detect)
+}
+
 impl AppState {
+    pub fn lang(&self) -> String {
+        self.language.lock().map(|l| l.clone()).unwrap_or_else(|_| "en".to_string())
+    }
+
+    pub fn set_language(&self, code: &str) -> Result<(), String> {
+        if !i18n::is_supported(code) {
+            return Err(format!("unsupported language: {code}"));
+        }
+        fs::write(language_file(&self.db_path), code).map_err(|e| e.to_string())?;
+        *self.language.lock().map_err(|e| e.to_string())? = code.to_string();
+        self.relabel_tray();
+        Ok(())
+    }
+
+    /// Подписи пунктов трея на текущем языке.
+    pub fn relabel_tray(&self) {
+        let lang = self.lang();
+        let Ok(items) = self.tray_items.lock() else { return };
+        for (key, item) in items.iter() {
+            let _ = item.set_text(i18n::t(&lang, key));
+        }
+    }
+
     pub fn open(db_path: &Path, downloads_dir: Option<PathBuf>) -> Result<Self, Box<dyn Error>> {
         let (storage, moved) = Storage::open_or_recover(db_path)?;
         if let Some(moved) = moved {
@@ -70,6 +110,8 @@ impl AppState {
             clip_payload: Mutex::new(None),
             downloads_dir,
             db_path: db_path.to_path_buf(),
+            language: Mutex::new(initial_language(db_path)),
+            tray_items: Mutex::new(Vec::new()),
         })
     }
 
@@ -108,7 +150,7 @@ impl AppState {
 
     /// Сводка за день в формате `YYYY-MM-DD`; без даты — за сегодня.
     pub fn day_summary(&self, date: Option<&str>) -> Result<DaySummary, String> {
-        let date = parse_date(date)?;
+        let date = parse_date(date, &self.lang())?;
         let (from, to) = time::day_bounds(date);
         let (samples, bookmarks, system, procs, goals, clips) = {
             let st = self.storage.lock().map_err(|e| e.to_string())?;
@@ -194,7 +236,7 @@ impl AppState {
     }
 
     pub fn set_goal(&self, category: &str, limit_mins: u32) -> Result<(), String> {
-        let category = Category::parse(category).ok_or("неизвестная категория")?;
+        let category = Category::parse(category).ok_or_else(|| i18n::t(&self.lang(), "err.unknown_category"))?;
         self.storage.lock().map_err(|e| e.to_string())?.set_goal(category, limit_mins).map_err(|e| e.to_string())
     }
 
@@ -210,7 +252,7 @@ impl AppState {
 
     /// Сохраняет сессии дня в CSV (открывается в Excel) и возвращает путь к файлу.
     pub fn export_day_csv(&self, date: Option<&str>, dir: &Path) -> Result<String, String> {
-        let date = parse_date(date)?;
+        let date = parse_date(date, &self.lang())?;
         let (from, to) = time::day_bounds(date);
         let samples = self
             .storage
@@ -220,7 +262,7 @@ impl AppState {
             .map_err(|e| e.to_string())?;
         let sessions = sessions::sessionize(&samples, &self.categorizer);
 
-        let mut csv = String::from("\u{feff}Начало;Конец;Секунд;Программа;Заголовок;Категория\r\n");
+        let mut csv = format!("\u{feff}{}\r\n", i18n::t(&self.lang(), "csv.header"));
         for s in &sessions {
             csv.push_str(&format!(
                 "{};{};{};{};{};{}\r\n",
