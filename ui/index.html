@@ -30,15 +30,15 @@
     </section>
 
     <section>
-      <h2>История дня</h2>
-      <input id="dayFilter" type="search" placeholder="Фильтр по программе или названию окна…" autocomplete="off">
-      <div id="timeline" class="timeline"></div>
-    </section>
-
-    <section>
-      <h2>Буфер обмена</h2>
-      <div class="muted small-text">Что вы копировали за день. Пароли из менеджеров паролей и окна с банками не записываются. Фильтр выше работает и здесь.</div>
-      <div id="clips" class="timeline"></div>
+      <h2>История</h2>
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="windows">Окна дня</button>
+        <button class="tab" data-tab="clips">Буфер обмена</button>
+        <button class="tab" data-tab="all">Поиск по всем дням</button>
+      </div>
+      <input id="q" type="search" autocomplete="off">
+      <div id="tabNote" class="muted small-text"></div>
+      <div id="list" class="timeline"></div>
     </section>
 
     <section>
@@ -94,12 +94,6 @@
     <section>
       <h2>Неделя</h2>
       <div id="week" class="bars"></div>
-    </section>
-
-    <section>
-      <h2>Поиск по всей истории</h2>
-      <input id="q" type="search" placeholder="Например: рецепт, договор, youtube…">
-      <div id="results"></div>
     </section>
 
     <section>

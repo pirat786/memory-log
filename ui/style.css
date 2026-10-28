@@ -53,10 +53,14 @@ dialog h3 { margin-top: 0; }
 .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 @media (max-width: 560px) { .bar { grid-template-columns: 100px 1fr 70px; } }
 
-.tl { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; align-items: baseline; }
+.hist { display: grid; grid-template-columns: 170px 1fr auto; gap: 12px; align-items: baseline; }
 .tl-time { color: var(--muted, #888); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tl-name { overflow-wrap: anywhere; }
 .timeline { max-height: 420px; overflow-y: auto; }
 
-.clip { display: grid; grid-template-columns: 170px 1fr auto; gap: 12px; align-items: baseline; }
-.clip .tl-name { white-space: pre-wrap; }
+.hist .tl-name { white-space: pre-wrap; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.tab { padding: 6px 14px; }
+.tab.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.hist { cursor: default; padding-left: 8px; border-left: 3px solid transparent; }
+.hist.selected { background: color-mix(in srgb, var(--text) 8%, transparent); border-left-color: var(--text); border-radius: 6px; }

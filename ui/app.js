@@ -127,54 +127,106 @@ function renderHealth(h) {
   list($("health"), rows, "Пока нет данных");
 }
 
-const TIMELINE_LIMIT = 300;
+const HISTORY_LIMIT = 300;
 let timelineData = [];
 let clipData = [];
+let allHits = [];
+let tab = "windows";
+// Выбранная запись буфера (Ctrl+↑/↓ двигают, Enter копирует).
+let clipSel = 0;
+let clipRows = [];
 
-// Хронология дня с мгновенным фильтром; без фильтра показываются последние отрезки.
-function renderTimeline() {
-  const q = $("dayFilter").value.trim().toLowerCase();
-  const rows = q
-    ? timelineData.filter((s) => s.app.toLowerCase().includes(q) || s.title.toLowerCase().includes(q))
-    : timelineData;
-  const target = $("timeline");
-  target.replaceChildren();
-  if (!rows.length) return target.append(note(q ? "Ничего не найдено за этот день" : "За этот день пока нет записей"));
-  for (const s of rows.slice(0, TIMELINE_LIMIT)) {
-    const row = el("div", "item tl");
-    row.append(
-      el("span", "tl-time", `${clock(s.start)}–${clock(s.end)}`),
-      el("span", "tl-name", s.title ? `${s.app} — ${s.title}` : s.app),
-      el("span", "muted", duration(s.end - s.start)),
-    );
-    target.append(row);
-  }
-  if (rows.length > TIMELINE_LIMIT) target.append(note(`Показаны последние ${TIMELINE_LIMIT} из ${rows.length}. Уточните фильтр.`));
-  renderClips(q);
+const TABS = {
+  windows: { placeholder: "Фильтр по программе или названию окна…", note: "" },
+  clips: {
+    placeholder: "Фильтр по скопированному тексту или программе…",
+    note: "Что вы копировали за день. Пароли из менеджеров паролей и окна с банками не записываются.",
+  },
+  all: { placeholder: "Например: рецепт, договор, youtube…", note: "Ищет по программам и названиям окон за всё время." },
+};
+
+const matches = (q, ...fields) => !q || fields.some((f) => f.toLowerCase().includes(q));
+
+function shortDuration(secs) {
+  return secs < 60 ? `${secs} с` : duration(secs);
 }
 
-function renderClips(q) {
-  const rows = q ? clipData.filter((c) => c.app.toLowerCase().includes(q) || c.text.toLowerCase().includes(q)) : clipData;
-  const target = $("clips");
-  target.replaceChildren();
-  if (!rows.length) return target.append(note(q ? "Ничего не найдено за этот день" : "За этот день ничего не копировали"));
-  for (const c of rows.slice(0, TIMELINE_LIMIT)) {
-    const row = el("div", "item clip");
-    const text = el("span", "tl-name", c.text.length > 300 ? c.text.slice(0, 300) + "…" : c.text);
-    text.title = c.text;
-    const btn = el("button", "small", "Копировать");
-    btn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(c.text);
-        btn.textContent = "Скопировано";
-      } catch {
-        btn.textContent = "Не удалось";
-      }
-      setTimeout(() => (btn.textContent = "Копировать"), 1500);
-    };
-    row.append(el("span", "tl-time", `${clock(c.ts)} · ${c.app}`), text, btn);
-    target.append(row);
+function historyRow(time, text, tail, button) {
+  const row = el("div", "item hist");
+  const body = el("span", "tl-name", text.length > 300 ? text.slice(0, 300) + "…" : text);
+  body.title = text;
+  row.append(el("span", "tl-time", time), body);
+  row.append(button ?? el("span", "muted", tail ?? ""));
+  return row;
+}
+
+async function copyText(text, btn) {
+  let label = "Скопировано";
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    label = "Не удалось";
   }
+  if (!btn) return $("tabNote").textContent = label === "Скопировано" ? "Скопировано в буфер обмена" : "Не удалось скопировать";
+  btn.textContent = label;
+  setTimeout(() => (btn.textContent = "Копировать"), 1500);
+}
+
+function copyButton(text) {
+  const btn = el("button", "small", "Копировать");
+  btn.onclick = (e) => { e.stopPropagation(); copyText(text, btn); };
+  return btn;
+}
+
+function clipHint() {
+  return clipRows.length
+    ? `Выбрано ${clipSel + 1} из ${clipRows.length}. Ctrl+↑ / Ctrl+↓ — выбрать, Enter — скопировать.`
+    : TABS.clips.note;
+}
+
+// Одна лента на три режима: окна дня, буфер обмена и поиск по всем дням.
+function renderHistory() {
+  const q = $("q").value.trim().toLowerCase();
+  const target = $("list");
+  target.replaceChildren();
+
+  let rows;
+  let empty;
+  if (tab === "windows") {
+    rows = timelineData
+      .filter((s) => matches(q, s.app, s.title))
+      .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${s.app} — ${s.title}` : s.app, shortDuration(s.end - s.start)));
+    empty = q ? "Ничего не найдено за этот день" : "За этот день пока нет записей";
+  } else if (tab === "clips") {
+    clipRows = clipData.filter((c) => matches(q, c.app, c.text));
+    clipSel = Math.min(clipSel, Math.max(clipRows.length - 1, 0));
+    rows = clipRows.map((c, i) => {
+      const row = historyRow(`${clock(c.ts)} · ${c.app}`, c.text, "", copyButton(c.text));
+      row.classList.toggle("selected", i === clipSel);
+      row.onclick = () => { clipSel = i; renderHistory(); };
+      return row;
+    });
+    $("tabNote").textContent = clipHint();
+    empty = q ? "Ничего не найдено за этот день" : "За этот день ничего не копировали";
+  } else {
+    const day = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+    rows = allHits.map((h) => historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${h.app} — ${h.title}` : h.app, ""));
+    empty = q ? "Ничего не найдено" : "Введите запрос, чтобы искать по всей истории";
+  }
+
+  if (!rows.length) return target.append(note(empty));
+  target.append(...rows.slice(0, HISTORY_LIMIT));
+  if (rows.length > HISTORY_LIMIT) target.append(note(`Показаны первые ${HISTORY_LIMIT} из ${rows.length}. Уточните запрос.`));
+}
+
+function setTab(name) {
+  tab = name;
+  clipSel = 0;
+  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
+  $("q").placeholder = TABS[name].placeholder;
+  $("tabNote").textContent = TABS[name].note;
+  searchAll();
+  renderHistory();
 }
 
 async function renderWeek() {
@@ -198,7 +250,7 @@ async function render() {
 
   timelineData = s.timeline;
   clipData = s.clips;
-  renderTimeline();
+  renderHistory();
 
   bars($("categories"), s.by_category.map((c) => ({ label: CATEGORY_NAMES[c.category] ?? c.category, secs: c.secs })));
   bars($("apps"), s.top_apps.map((a) => ({ label: a.app, secs: a.secs })));
@@ -307,20 +359,40 @@ $("autostart").onchange = async (e) => {
   }
 };
 
-$("dayFilter").oninput = renderTimeline;
-
 let searchTimer;
-$("q").oninput = (e) => {
+// Поиск по всем дням идёт в базе, остальные вкладки фильтруют уже загруженный день сразу.
+function searchAll() {
   clearTimeout(searchTimer);
+  if (tab !== "all") return;
+  const q = $("q").value.trim();
+  if (!q) {
+    allHits = [];
+    return renderHistory();
+  }
   searchTimer = setTimeout(async () => {
-    const q = e.target.value.trim();
-    if (!q) return $("results").replaceChildren();
-    const hits = await invoke("search", { query: q });
-    const day = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-    list($("results"), hits.map((h) => `${day(h.last_ts)} ${clock(h.last_ts)} · ${h.app}${h.title ? " — " + h.title : ""}`),
-      "Ничего не найдено");
+    allHits = await invoke("search", { query: q });
+    renderHistory();
   }, 250);
+}
+
+$("q").oninput = () => {
+  renderHistory();
+  searchAll();
 };
+document.addEventListener("keydown", (e) => {
+  if (tab !== "clips" || !clipRows.length) return;
+  if (e.ctrlKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault();
+    clipSel = Math.max(0, Math.min(clipRows.length - 1, clipSel + (e.key === "ArrowDown" ? 1 : -1)));
+    renderHistory();
+    document.querySelector("#list .selected")?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter" && e.target.tagName !== "BUTTON" && !document.querySelector("dialog[open]")) {
+    e.preventDefault();
+    copyText(clipRows[clipSel].text);
+  }
+});
+for (const b of document.querySelectorAll(".tab")) b.onclick = () => setTab(b.dataset.tab);
+setTab("windows");
 
 for (const [value, name] of Object.entries(CATEGORY_NAMES)) {
   const o = el("option", "", name);
