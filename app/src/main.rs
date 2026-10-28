@@ -6,10 +6,11 @@ mod commands;
 mod log;
 mod state;
 mod tray;
+mod window;
 
 use std::sync::Arc;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, RunEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -22,11 +23,7 @@ fn main() {
         // Вторая копия не запускается, а показывает окно первой: две программы
         // не должны одновременно писать в одну базу.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
+            window::show_main(app);
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(
@@ -53,17 +50,6 @@ fn main() {
             tray::build(app, state.clone())?;
             app.manage(state);
 
-            // Плашка листания буфера: справа снизу, поверх окон, без фокуса. Появляется только при листании.
-            WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("popup.html".into()))
-                .title("Буфер обмена")
-                .inner_size(380.0, 250.0)
-                .decorations(false)
-                .resizable(false)
-                .always_on_top(true)
-                .skip_taskbar(true)
-                .focusable(false)
-                .visible(false)
-                .build()?;
             // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
             let mods = Some(Modifiers::CONTROL | Modifiers::ALT);
             for key in [Code::ArrowDown, Code::ArrowUp] {
@@ -72,13 +58,6 @@ fn main() {
                 }
             }
             Ok(())
-        })
-        // Закрытие окна прячет его в трей, запись продолжается.
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::day_summary,
@@ -89,10 +68,22 @@ fn main() {
             commands::forget_minutes,
             commands::set_paused,
             commands::status,
+            commands::clip_nav_state,
+            commands::delete_clip,
+            commands::clear_clips,
             commands::export_day_csv,
             commands::get_autostart,
             commands::set_autostart,
         ])
-        .run(tauri::generate_context!())
-        .expect("не удалось запустить Memory Log");
+        .build(tauri::generate_context!())
+        .expect("не удалось собрать Memory Log")
+        // Закрытие окна уничтожает его веб-часть (в памяти остаётся один процесс), запись и трей работают.
+        // Выход только из меню трея: он приходит с кодом, а закрытие последнего окна — без кода.
+        .run(|_app, event| {
+            if let RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

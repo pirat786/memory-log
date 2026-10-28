@@ -54,6 +54,8 @@
     }
 
     window.__TAURI__.event.listen("clip-nav", (e) => render(e.payload));
+    // Плашка создаётся при первом нажатии и может пропустить событие: забираем последнее состояние сама.
+    window.__TAURI__.core.invoke("clip_nav_state").then((p) => p && render(p));
   </script>
 </body>
 </html>

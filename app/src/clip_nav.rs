@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::log;
 use crate::state::AppState;
@@ -12,7 +12,14 @@ use crate::state::AppState;
 const RECENT: usize = 20;
 /// Сколько плашка висит после последнего нажатия. Столько же держится «текущий выбор».
 const SHOW_FOR: Duration = Duration::from_millis(2500);
+/// Через сколько после скрытия плашка уничтожается, освобождая память веб-части.
+const DESTROY_AFTER: Duration = Duration::from_secs(20);
+/// Новая плашка загружает страницу не мгновенно: показываем её чуть позже, чтобы не мигала пустой.
+const FIRST_SHOW_DELAY: Duration = Duration::from_millis(500);
 /// Размер плашки (логические пиксели) и отступ от низа экрана под панель задач.
+/// Должны совпадать с `additionalBrowserArgs` в tauri.conf.json: WebView2 не создаёт окна
+/// с разными параметрами в одной папке данных.
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --in-process-gpu --renderer-process-limit=1";
 const POPUP_W: f64 = 380.0;
 const POPUP_H: f64 = 250.0;
 const MARGIN_RIGHT: f64 = 16.0;
@@ -26,6 +33,32 @@ fn preview(text: &str) -> String {
         format!("{}…", one_line.chars().take(PREVIEW_CHARS).collect::<String>())
     } else {
         one_line
+    }
+}
+
+/// Плашка создаётся при первом нажатии и уничтожается, когда ею давно не пользовались.
+/// Второй результат — окно создано только что.
+fn ensure_popup(app: &AppHandle) -> Option<(WebviewWindow, bool)> {
+    if let Some(w) = app.get_webview_window("popup") {
+        return Some((w, false));
+    }
+    let built = WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("popup.html".into()))
+        .title("Буфер обмена")
+        .inner_size(POPUP_W, POPUP_H)
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focusable(false)
+        .additional_browser_args(BROWSER_ARGS)
+        .visible(false)
+        .build();
+    match built {
+        Ok(w) => Some((w, true)),
+        Err(e) => {
+            log::info(&format!("не удалось создать плашку: {e}"));
+            None
+        }
     }
 }
 
@@ -64,20 +97,39 @@ pub fn step(app: &AppHandle, state: &Arc<AppState>, delta: i32) {
         }
     }
 
-    let Some(win) = app.get_webview_window("popup") else { return };
+    let Some((win, created)) = ensure_popup(app) else { return };
     let items: Vec<_> = clips.iter().map(|c| json!({ "app": c.app, "text": preview(&c.text) })).collect();
+    let payload = json!({ "items": items, "sel": sel });
+    if let Ok(mut slot) = state.clip_payload.lock() {
+        *slot = Some(payload.clone());
+    }
     place_popup(&win);
-    let _ = win.emit("clip-nav", json!({ "items": items, "sel": sel }));
-    let _ = win.show();
+    let _ = win.emit("clip-nav", payload);
+    if created {
+        let win = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(FIRST_SHOW_DELAY);
+            let _ = win.show();
+        });
+    } else {
+        let _ = win.show();
+    }
 
     let app = app.clone();
     let state = state.clone();
     std::thread::spawn(move || {
+        let latest = || state.clip_nav.lock().map(|n| n.generation == generation).unwrap_or(true);
         std::thread::sleep(SHOW_FOR);
-        let still_latest = state.clip_nav.lock().map(|n| n.generation == generation).unwrap_or(true);
-        if still_latest {
+        if !latest() {
+            return;
+        }
+        if let Some(win) = app.get_webview_window("popup") {
+            let _ = win.hide();
+        }
+        std::thread::sleep(DESTROY_AFTER);
+        if latest() {
             if let Some(win) = app.get_webview_window("popup") {
-                let _ = win.hide();
+                let _ = win.destroy();
             }
         }
     });

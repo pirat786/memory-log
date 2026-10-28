@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{App, Manager};
+use tauri::App;
 
 use crate::state::AppState;
 
@@ -19,12 +19,7 @@ pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
     }
     builder
         .on_menu_event(move |app, event| match event.id.as_ref() {
-            "open" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
+            "open" => crate::window::show_main(app),
             "mark" => {
                 let _ = state.add_bookmark("");
             }

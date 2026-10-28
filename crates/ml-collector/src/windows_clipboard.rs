@@ -63,7 +63,8 @@ unsafe fn read_text() -> Result<Option<String>, ()> {
             return None;
         }
         let mut len = 0usize;
-        while *ptr.add(len) != 0 {
+        // Читаем не больше нужного: скопированный гигантский текст не должен целиком загружаться в память.
+        while len < MAX_CHARS * 2 && *ptr.add(len) != 0 {
             len += 1;
         }
         let text = String::from_utf16_lossy(slice::from_raw_parts(ptr, len));

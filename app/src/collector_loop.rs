@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use ml_collector::{ClipboardWatcher, SystemCollector};
-use ml_core::privacy::HIDDEN_APP;
+use ml_core::privacy::{looks_like_secret, HIDDEN_APP};
 use ml_core::{ClipEntry, PrivacyFilter, Sample};
 
 use crate::log;
@@ -72,7 +72,7 @@ pub fn spawn(state: Arc<AppState>) {
                 if let (Some(text), true) = (copied, result.is_ok()) {
                     // Окно, где копировали, считаем скрытым по тем же правилам, что и заголовки: текст из него не пишем.
                     let app = last_window.as_ref().map_or_else(String::new, |w| w.app.clone());
-                    if app != HIDDEN_APP {
+                    if app != HIDDEN_APP && !looks_like_secret(&text) {
                         let entry = ClipEntry { ts: Utc::now().timestamp(), app, text };
                         result = state
                             .storage

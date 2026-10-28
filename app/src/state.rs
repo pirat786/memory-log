@@ -34,6 +34,8 @@ pub struct AppState {
     /// Номер изменения буфера, сделанного листанием: сборщик его не записывает.
     pub clip_ignore: AtomicU32,
     pub clip_nav: Mutex<ClipNav>,
+    /// Последнее содержимое плашки: только что созданная плашка забирает его сама.
+    pub clip_payload: Mutex<Option<serde_json::Value>>,
     downloads_dir: Option<PathBuf>,
     db_path: PathBuf,
 }
@@ -65,6 +67,7 @@ impl AppState {
             paused: AtomicBool::new(false),
             clip_ignore: AtomicU32::new(0),
             clip_nav: Mutex::new(ClipNav { sel: 0, last: None, generation: 0 }),
+            clip_payload: Mutex::new(None),
             downloads_dir,
             db_path: db_path.to_path_buf(),
         })
@@ -176,6 +179,14 @@ impl AppState {
         let (app, title) = last.map(|s| (s.app, s.title)).unwrap_or_default();
         st.add_bookmark(&Bookmark { ts: Utc::now().timestamp(), app, title, note: note.to_string() })
             .map_err(|e| e.to_string())
+    }
+
+    pub fn delete_clip(&self, text: &str) -> Result<(), String> {
+        self.storage.lock().map_err(|e| e.to_string())?.delete_clip(text).map_err(|e| e.to_string())
+    }
+
+    pub fn clear_clips(&self) -> Result<(), String> {
+        self.storage.lock().map_err(|e| e.to_string())?.clear_clips().map_err(|e| e.to_string())
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>, String> {

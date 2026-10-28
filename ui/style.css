@@ -64,3 +64,5 @@ dialog h3 { margin-top: 0; }
 .tab.active { background: var(--text); color: var(--bg); border-color: var(--text); }
 .hist { cursor: default; padding-left: 8px; border-left: 3px solid transparent; }
 .hist.selected { background: color-mix(in srgb, var(--text) 8%, transparent); border-left-color: var(--text); border-radius: 6px; }
+.note-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 4px 0; }
+.btns { display: inline-flex; gap: 6px; }

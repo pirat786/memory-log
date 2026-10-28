@@ -44,6 +44,21 @@ pub fn set_paused(state: Shared, paused: bool) {
 }
 
 #[tauri::command]
+pub fn delete_clip(state: Shared, text: String) -> Result<(), String> {
+    state.delete_clip(&text)
+}
+
+#[tauri::command]
+pub fn clear_clips(state: Shared) -> Result<(), String> {
+    state.clear_clips()
+}
+
+#[tauri::command]
+pub fn clip_nav_state(state: Shared) -> Option<serde_json::Value> {
+    state.clip_payload.lock().ok().and_then(|p| p.clone())
+}
+
+#[tauri::command]
 pub fn status(state: Shared) -> Result<Status, String> {
     state.status()
 }

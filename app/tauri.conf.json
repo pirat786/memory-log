@@ -15,7 +15,8 @@
         "width": 980,
         "height": 720,
         "minWidth": 420,
-        "minHeight": 520
+        "minHeight": 520,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --in-process-gpu --renderer-process-limit=1"
       }
     ],
     "security": { "csp": null }

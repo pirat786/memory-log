@@ -41,6 +41,9 @@ impl StorageError {
     }
 }
 
+/// Сколько записей буфера обмена хранится максимум.
+const MAX_CLIPS: usize = 2000;
+
 pub type Result<T> = std::result::Result<T, StorageError>;
 
 pub struct Storage {
@@ -159,6 +162,17 @@ impl Storage {
         let mut stmt = self.conn.prepare("SELECT ts, app, text FROM clipboard ORDER BY ts DESC LIMIT ?1")?;
         let rows = stmt.query_map(params![limit as i64], |r| Ok(ClipEntry { ts: r.get(0)?, app: r.get(1)?, text: r.get(2)? }))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Удаляет одну запись буфера (по тексту, он уникален).
+    pub fn delete_clip(&self, text: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM clipboard WHERE text = ?1", params![text])?;
+        Ok(())
+    }
+
+    pub fn clear_clips(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM clipboard", [])?;
+        Ok(())
     }
 
     pub fn add_bookmark(&self, b: &Bookmark) -> Result<()> {
@@ -300,6 +314,11 @@ impl Storage {
     /// Чистка старых подробных данных, чтобы база не росла бесконечно.
     pub fn prune(&self, system_before: Timestamp, procs_before: Timestamp) -> Result<()> {
         self.conn.execute("DELETE FROM clipboard WHERE ts < ?1", params![procs_before])?;
+        // Кроме срока, ограничиваем и число записей, чтобы база не раздувалась от частого копирования.
+        self.conn.execute(
+            "DELETE FROM clipboard WHERE rowid NOT IN (SELECT rowid FROM clipboard ORDER BY ts DESC LIMIT ?1)",
+            params![MAX_CLIPS as i64],
+        )?;
         self.conn.execute("DELETE FROM system_samples WHERE ts < ?1", params![system_before])?;
         self.conn.execute("DELETE FROM proc_samples WHERE ts < ?1", params![procs_before])?;
         Ok(())
@@ -363,6 +382,12 @@ mod tests {
         st.insert_clip(&c(3, "b")).unwrap();
         assert_eq!(st.clips_between(0, 10).unwrap(), vec![c(2, "a"), c(3, "b")]);
         assert_eq!(st.recent_clips(1).unwrap(), vec![c(3, "b")]);
+        st.delete_clip("b").unwrap();
+        assert_eq!(st.recent_clips(5).unwrap(), vec![c(2, "a")]);
+        st.clear_clips().unwrap();
+        assert!(st.recent_clips(5).unwrap().is_empty());
+        st.insert_clip(&c(2, "a")).unwrap();
+        st.insert_clip(&c(3, "b")).unwrap();
         // Копирование старого текста не создаёт дубль, а поднимает его наверх.
         st.insert_clip(&c(4, "a")).unwrap();
         assert_eq!(st.recent_clips(5).unwrap(), vec![c(4, "a"), c(3, "b")]);

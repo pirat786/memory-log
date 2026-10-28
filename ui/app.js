@@ -172,6 +172,18 @@ async function copyText(text, btn) {
   setTimeout(() => (btn.textContent = "Копировать"), 1500);
 }
 
+function deleteButton(text) {
+  const btn = el("button", "small", "Удалить");
+  btn.title = "Удалить эту запись из истории буфера";
+  btn.onclick = async (e) => {
+    e.stopPropagation();
+    await invoke("delete_clip", { text });
+    clipData = clipData.filter((c) => c.text !== text);
+    renderHistory();
+  };
+  return btn;
+}
+
 function copyButton(text) {
   const btn = el("button", "small", "Копировать");
   btn.onclick = (e) => { e.stopPropagation(); copyText(text, btn); };
@@ -189,6 +201,7 @@ function renderHistory() {
   const q = $("q").value.trim().toLowerCase();
   const target = $("list");
   target.replaceChildren();
+  $("clearClips").hidden = true;
 
   let rows;
   let empty;
@@ -201,12 +214,15 @@ function renderHistory() {
     clipRows = clipData.filter((c) => matches(q, c.app, c.text));
     clipSel = Math.min(clipSel, Math.max(clipRows.length - 1, 0));
     rows = clipRows.map((c, i) => {
-      const row = historyRow(`${clock(c.ts)} · ${c.app}`, c.text, "", copyButton(c.text));
+      const buttons = el("span", "btns");
+      buttons.append(copyButton(c.text), deleteButton(c.text));
+      const row = historyRow(`${clock(c.ts)} · ${c.app}`, c.text, "", buttons);
       row.classList.toggle("selected", i === clipSel);
       row.onclick = () => { clipSel = i; renderHistory(); };
       return row;
     });
     $("tabNote").textContent = clipHint();
+    $("clearClips").hidden = false;
     empty = q ? "Ничего не найдено за этот день" : "За этот день ничего не копировали";
   } else {
     const day = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
@@ -379,6 +395,13 @@ $("q").oninput = () => {
   renderHistory();
   searchAll();
 };
+$("clearClips").onclick = async () => {
+  if (!window.confirm("Удалить всю историю буфера обмена за все дни? Это нельзя отменить.")) return;
+  await invoke("clear_clips");
+  clipData = [];
+  renderHistory();
+};
+
 document.addEventListener("keydown", (e) => {
   if (tab !== "clips" || !clipRows.length) return;
   if (e.ctrlKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
