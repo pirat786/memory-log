@@ -13,7 +13,7 @@ mod windows_power;
 
 pub use system::SystemCollector;
 #[cfg(windows)]
-pub use windows_clipboard::ClipboardWatcher;
+pub use windows_clipboard::{set_text as set_clipboard_text, ClipboardWatcher};
 
 /// На других системах буфер обмена не отслеживается.
 #[cfg(not(windows))]
@@ -25,9 +25,14 @@ impl ClipboardWatcher {
         Self
     }
 
-    pub fn poll(&mut self) -> Option<String> {
+    pub fn poll(&mut self, _ignore: u32) -> Option<String> {
         None
     }
+}
+
+#[cfg(not(windows))]
+pub fn set_clipboard_text(_text: &str) -> Option<u32> {
+    None
 }
 
 pub trait Collector: Send {

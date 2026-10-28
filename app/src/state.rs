@@ -1,8 +1,9 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use ml_core::{sessions, summary, time, Bookmark, Categorizer, Category, DayInput, DaySummary, Download, SearchHit, WeekDay};
@@ -17,11 +18,22 @@ pub struct Status {
     pub last_sample_age_secs: Option<i64>,
 }
 
+/// Где мы сейчас при листании буфера горячими клавишами.
+pub struct ClipNav {
+    pub sel: usize,
+    pub last: Option<Instant>,
+    /// Растёт при каждом нажатии: по нему плашка понимает, что скрывать её пока рано.
+    pub generation: u64,
+}
+
 /// Общее состояние приложения: база, правила категорий, флаг паузы.
 pub struct AppState {
     pub storage: Mutex<Storage>,
     pub categorizer: Categorizer,
     pub paused: AtomicBool,
+    /// Номер изменения буфера, сделанного листанием: сборщик его не записывает.
+    pub clip_ignore: AtomicU32,
+    pub clip_nav: Mutex<ClipNav>,
     downloads_dir: Option<PathBuf>,
     db_path: PathBuf,
 }
@@ -51,6 +63,8 @@ impl AppState {
             storage: Mutex::new(storage),
             categorizer: Categorizer::with_defaults(),
             paused: AtomicBool::new(false),
+            clip_ignore: AtomicU32::new(0),
+            clip_nav: Mutex::new(ClipNav { sel: 0, last: None, generation: 0 }),
             downloads_dir,
             db_path: db_path.to_path_buf(),
         })

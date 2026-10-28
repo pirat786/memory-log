@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/003_system_metrics.sql"),
     include_str!("../migrations/004_drop_idle.sql"),
     include_str!("../migrations/005_clipboard.sql"),
+    include_str!("../migrations/006_clipboard_unique.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -136,14 +137,13 @@ impl Storage {
         Ok(rows.next().transpose()?)
     }
 
-    /// Подряд идущие одинаковые копирования не дублируются.
+    /// Одинаковый текст не дублируется: повторное копирование поднимает старую запись наверх.
     pub fn insert_clip(&self, c: &ClipEntry) -> Result<()> {
-        let last: Option<String> =
-            self.conn.query_row("SELECT text FROM clipboard ORDER BY ts DESC LIMIT 1", [], |r| r.get(0)).ok();
-        if last.as_deref() == Some(c.text.as_str()) {
-            return Ok(());
-        }
-        self.conn.execute("INSERT INTO clipboard (ts, app, text) VALUES (?1, ?2, ?3)", params![c.ts, c.app, c.text])?;
+        self.conn.execute(
+            "INSERT INTO clipboard (ts, app, text) VALUES (?1, ?2, ?3)
+             ON CONFLICT(text) DO UPDATE SET ts = excluded.ts, app = excluded.app",
+            params![c.ts, c.app, c.text],
+        )?;
         Ok(())
     }
 
@@ -151,6 +151,13 @@ impl Storage {
         let mut stmt =
             self.conn.prepare("SELECT ts, app, text FROM clipboard WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
         let rows = stmt.query_map(params![from, to], |r| Ok(ClipEntry { ts: r.get(0)?, app: r.get(1)?, text: r.get(2)? }))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Последние скопированные тексты, от новых к старым (для листания горячими клавишами).
+    pub fn recent_clips(&self, limit: usize) -> Result<Vec<ClipEntry>> {
+        let mut stmt = self.conn.prepare("SELECT ts, app, text FROM clipboard ORDER BY ts DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit as i64], |r| Ok(ClipEntry { ts: r.get(0)?, app: r.get(1)?, text: r.get(2)? }))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -354,7 +361,11 @@ mod tests {
         st.insert_clip(&c(1, "a")).unwrap();
         st.insert_clip(&c(2, "a")).unwrap();
         st.insert_clip(&c(3, "b")).unwrap();
-        assert_eq!(st.clips_between(0, 10).unwrap(), vec![c(1, "a"), c(3, "b")]);
+        assert_eq!(st.clips_between(0, 10).unwrap(), vec![c(2, "a"), c(3, "b")]);
+        assert_eq!(st.recent_clips(1).unwrap(), vec![c(3, "b")]);
+        // Копирование старого текста не создаёт дубль, а поднимает его наверх.
+        st.insert_clip(&c(4, "a")).unwrap();
+        assert_eq!(st.recent_clips(5).unwrap(), vec![c(4, "a"), c(3, "b")]);
         st.delete_between(0, 10).unwrap();
         assert!(st.clips_between(0, 10).unwrap().is_empty());
     }

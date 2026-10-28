@@ -57,7 +57,7 @@ pub fn spawn(state: Arc<AppState>) {
             }
 
             // Буфер опрашиваем и на паузе, чтобы скопированное во время паузы не записалось после неё.
-            let copied = clipboard.poll();
+            let copied = clipboard.poll(state.clip_ignore.load(std::sync::atomic::Ordering::Relaxed));
             if !state.is_paused() {
                 let mut result = Ok(());
                 if let Some(sample) = windows.sample() {

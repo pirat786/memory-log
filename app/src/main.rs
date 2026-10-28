@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod clip_nav;
 mod collector_loop;
 mod commands;
 mod log;
@@ -8,7 +9,8 @@ mod tray;
 
 use std::sync::Arc;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_autostart::MacosLauncher;
 
 use crate::state::AppState;
@@ -27,6 +29,19 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(state) = app.try_state::<Arc<AppState>>() else { return };
+                    // Вниз по списку — к более старым записям, вверх — к новым.
+                    let delta = if shortcut.key == Code::ArrowDown { 1 } else { -1 };
+                    clip_nav::step(app, &state, delta);
+                })
+                .build(),
+        )
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -37,6 +52,25 @@ fn main() {
             collector_loop::spawn(state.clone());
             tray::build(app, state.clone())?;
             app.manage(state);
+
+            // Плашка листания буфера: справа снизу, поверх окон, без фокуса. Появляется только при листании.
+            WebviewWindowBuilder::new(app, "popup", WebviewUrl::App("popup.html".into()))
+                .title("Буфер обмена")
+                .inner_size(380.0, 250.0)
+                .decorations(false)
+                .resizable(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .focusable(false)
+                .visible(false)
+                .build()?;
+            // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
+            let mods = Some(Modifiers::CONTROL | Modifiers::ALT);
+            for key in [Code::ArrowDown, Code::ArrowUp] {
+                if let Err(e) = app.global_shortcut().register(Shortcut::new(mods, key)) {
+                    log::info(&format!("не удалось занять сочетание клавиш для листания буфера: {e}"));
+                }
+            }
             Ok(())
         })
         // Закрытие окна прячет его в трей, запись продолжается.

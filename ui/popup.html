@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Буфер обмена</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1d2029; color: #e8eaf0;
+      font: 13px "Segoe UI", system-ui, sans-serif; user-select: none; }
+    body { box-sizing: border-box; border: 1px solid #3a3f4e; border-radius: 12px; padding: 10px 10px 8px; }
+    .head { display: flex; justify-content: space-between; color: #9aa1b2; font-size: 12px; margin: 0 4px 6px; }
+    .row { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 6px 8px; border-radius: 8px;
+      border-left: 3px solid transparent; }
+    .row .app { color: #9aa1b2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .text { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+    .row.sel { background: #2e3446; border-left-color: #8ab4ff; }
+    .foot { color: #9aa1b2; font-size: 11.5px; margin: 6px 4px 0; }
+    .empty { color: #9aa1b2; padding: 18px 8px; }
+  </style>
+</head>
+<body>
+  <div class="head"><span>Буфер обмена</span><span id="pos"></span></div>
+  <div id="rows"></div>
+  <div class="foot">Ctrl+Alt+↑ / ↓ — листать. Выбранное уже в буфере: вставляйте Ctrl+V.</div>
+  <script>
+    const VISIBLE = 4;
+    const rows = document.getElementById("rows");
+    const pos = document.getElementById("pos");
+
+    function render({ items, sel }) {
+      rows.replaceChildren();
+      if (!items.length) {
+        pos.textContent = "";
+        const e = document.createElement("div");
+        e.className = "empty";
+        e.textContent = "История буфера пока пуста";
+        return rows.append(e);
+      }
+      pos.textContent = `${sel + 1} из ${items.length}`;
+      // Окно из VISIBLE записей, в котором всегда виден выбранный пункт.
+      const start = Math.max(0, Math.min(sel - 1, items.length - VISIBLE));
+      items.slice(start, start + VISIBLE).forEach((it, i) => {
+        const row = document.createElement("div");
+        row.className = "row" + (start + i === sel ? " sel" : "");
+        const app = document.createElement("div");
+        app.className = "app";
+        app.textContent = it.app;
+        const text = document.createElement("div");
+        text.className = "text";
+        text.textContent = it.text;
+        row.append(app, text);
+        rows.append(row);
+      });
+    }
+
+    window.__TAURI__.event.listen("clip-nav", (e) => render(e.payload));
+  </script>
+</body>
+</html>
