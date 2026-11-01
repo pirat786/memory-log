@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::model::{Bookmark, Category, ClipEntry, Download, Goal, ProcSample, Session, SystemSample, Timestamp};
+use crate::sites;
 use crate::stats::{self, Health, LoadStats, NetStats, ProcLoad, Rhythm};
+use crate::timeline::{self, TimelineBlock};
 
 /// Минимальная длина «фокуса», чтобы попасть в сводку.
 pub const FOCUS_MIN_SECS: i64 = 20 * 60;
@@ -57,7 +59,8 @@ pub struct DaySummary {
     pub top_apps: Vec<AppTime>,
     pub focus_blocks: Vec<FocusBlock>,
     /// Хронология дня: отрезки в одном окне, от новых к старым.
-    pub timeline: Vec<Session>,
+    pub timeline: Vec<TimelineBlock>,
+    pub sites: Vec<SiteTime>,
     pub bookmarks: Vec<Bookmark>,
     pub rhythm: Option<Rhythm>,
     pub load: Option<LoadStats>,
@@ -102,7 +105,8 @@ pub fn build(input: DayInput) -> DaySummary {
         by_category,
         top_apps,
         focus_blocks: focus_blocks(sessions),
-        timeline: timeline(sessions),
+        timeline: timeline::build(sessions),
+        sites: site_times(sessions),
         bookmarks: input.bookmarks,
         rhythm: stats::rhythm(sessions),
         load: stats::load_stats(input.system),
@@ -115,6 +119,26 @@ pub fn build(input: DayInput) -> DaySummary {
     }
 }
 
+/// Время на сайте. Пустое название — браузер, но сайт не узнан.
+#[derive(Debug, Clone, Serialize)]
+pub struct SiteTime {
+    pub site: String,
+    pub secs: i64,
+}
+
+fn site_times(sessions: &[Session]) -> Vec<SiteTime> {
+    let mut by_site: HashMap<&str, i64> = HashMap::new();
+    for s in sessions {
+        if let Some(site) = sites::site_of(&s.app, &s.title) {
+            *by_site.entry(site).or_default() += s.secs();
+        }
+    }
+    let mut out: Vec<SiteTime> = by_site.into_iter().map(|(site, secs)| SiteTime { site: site.to_string(), secs }).collect();
+    out.sort_by(|a, b| b.secs.cmp(&a.secs).then_with(|| a.site.cmp(&b.site)));
+    out.truncate(8);
+    out
+}
+
 /// Подряд идущие отрезки в одной программе (заголовок окна не важен).
 pub(crate) fn merge_blocks(sessions: &[Session]) -> Vec<FocusBlock> {
     let mut blocks: Vec<FocusBlock> = Vec::new();
@@ -125,13 +149,6 @@ pub(crate) fn merge_blocks(sessions: &[Session]) -> Vec<FocusBlock> {
         }
     }
     blocks
-}
-
-/// Отрезки короче этого (случайные переключения окон) в хронологию не попадают.
-pub const TIMELINE_MIN_SECS: i64 = 15;
-
-fn timeline(sessions: &[Session]) -> Vec<Session> {
-    sessions.iter().rev().filter(|s| s.secs() >= TIMELINE_MIN_SECS).cloned().collect()
 }
 
 fn focus_blocks(sessions: &[Session]) -> Vec<FocusBlock> {
@@ -194,7 +211,13 @@ mod tests {
         assert_eq!(s.focus_blocks[0].end, 1500);
         assert_eq!(s.goals[0].used_mins, 25);
         assert!(s.load.is_none());
-        assert_eq!(s.timeline.len(), 3);
+        // Два куска winword с разными заголовками склеиваются в один блок.
+        assert_eq!(s.timeline.len(), 2);
         assert_eq!(s.timeline[0].app, "chrome");
+        assert_eq!(s.timeline[1].title_count, 2);
+        // «chrome» в тесте с заголовком «c» — браузер без известного сайта.
+        assert_eq!(s.sites.len(), 1);
+        assert_eq!(s.sites[0].site, "");
+        assert_eq!(s.sites[0].secs, 60);
     }
 }

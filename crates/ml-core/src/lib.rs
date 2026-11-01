@@ -5,9 +5,11 @@ pub mod categorize;
 pub mod model;
 pub mod privacy;
 pub mod sessions;
+pub mod sites;
 pub mod stats;
 pub mod summary;
 pub mod time;
+pub mod timeline;
 
 pub use categorize::Categorizer;
 pub use model::{Bookmark, Category, ClipEntry, Download, Goal, ProcSample, Sample, SearchHit, Session, SystemSample, Timestamp};

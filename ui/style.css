@@ -64,5 +64,21 @@ dialog h3 { margin-top: 0; }
 .tab.active { background: var(--text); color: var(--bg); border-color: var(--text); }
 .hist { cursor: default; padding-left: 8px; border-left: 3px solid transparent; }
 .hist.selected { background: color-mix(in srgb, var(--text) 8%, transparent); border-left-color: var(--text); border-radius: 6px; }
+.hist.cat-work { border-left-color: #4f6bed; }
+.hist.cat-communication { border-left-color: #2fb344; }
+.hist.cat-social { border-left-color: #e0569a; }
+.hist.cat-entertainment { border-left-color: #f59f00; }
+.hist.cat-shopping { border-left-color: #12b5cb; }
+.hist.cat-study { border-left-color: #7950f2; }
+.hist.cat-games { border-left-color: #d9534f; }
+.hist.cat-other { border-left-color: #9aa1b2; }
+.hour-mark { margin: 14px 0 2px; font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--muted); border-bottom: 1px solid var(--line); }
+.hour-mark:first-child { margin-top: 0; }
+.break-row { margin: 4px 0; padding: 2px 8px 2px 11px; font-size: 13px; font-style: italic; color: var(--muted); }
+.hist.expandable { cursor: pointer; }
+.hist.expandable:hover { background: color-mix(in srgb, var(--text) 5%, transparent); border-radius: 6px; }
+.hist.expandable.open { border-left-color: var(--accent); }
+.details { margin: 0 0 10px 182px; padding-left: 10px; border-left: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.detail { padding: 2px 0; overflow-wrap: anywhere; }
 .note-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 4px 0; }
 .btns { display: inline-flex; gap: 6px; }

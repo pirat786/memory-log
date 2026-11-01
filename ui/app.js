@@ -18,8 +18,10 @@ const clock = (ts) => new Date(ts * 1000).toLocaleTimeString(I18N.locale, { hour
 const pct = (v) => `${Math.round(v)}%`;
 
 function duration(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.round((secs % 3600) / 60);
+  // Сначала округляем до минут целиком, иначе 23 ч 59,6 мин превращается в «23 ч 60 мин».
+  const totalMin = Math.round(secs / 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
   if (h && m) return `${h} ${t("unit.h")} ${m} ${t("unit.min")}`;
   if (h) return `${h} ${t("unit.h")}`;
   return `${m} ${t("unit.min")}`;
@@ -161,6 +163,55 @@ function historyRow(time, text, tail, button) {
   return row;
 }
 
+/// Пауза между блоками, начиная с которой в ленте появляется строка «Перерыв».
+const BREAK_ROW_SECS = 5 * 60;
+
+// Лента блоков (новые сверху) с заголовками часов и строками перерывов. При поиске заголовки не нужны.
+function timelineWithMarks(q) {
+  const out = [];
+  let lastHour = null;
+  timelineData.forEach((b, i) => {
+    if (!matches(q, appName(b.app), ...b.titles.map((x) => x.title))) return;
+    if (!q) {
+      const hour = new Date(b.start * 1000).getHours();
+      if (hour !== lastHour) {
+        out.push(el("div", "hour-mark", `${String(hour).padStart(2, "0")}:00`));
+        lastHour = hour;
+      }
+    }
+    out.push(blockRow(b));
+    const older = timelineData[i + 1];
+    if (!q && older && b.start - older.end >= BREAK_ROW_SECS) {
+      out.push(el("div", "break-row", t("hist.break", { v: duration(b.start - older.end) })));
+    }
+  });
+  return out;
+}
+
+// Один блок ленты: программа, главное окно и «ещё N»; по щелчку раскрывается список всех окон блока.
+function blockRow(b) {
+  const main = b.titles[0]?.title ?? "";
+  let text = main ? `${appName(b.app)} — ${main}` : appName(b.app);
+  if (b.title_count > 1) text += ` ${t("hist.more_titles", { n: b.title_count - 1 })}`;
+  const row = historyRow(`${clock(b.start)}–${clock(b.end)}`, text, shortDuration(b.active_secs));
+  row.classList.add(`cat-${b.category}`);
+  row.title = categoryName(b.category);
+  if (b.title_count <= 1) return row;
+
+  const details = el("div", "details");
+  details.hidden = true;
+  for (const x of b.titles) details.append(el("div", "detail", `${x.title || appName(b.app)} · ${shortDuration(x.secs)}`));
+  if (b.title_count > b.titles.length) details.append(note(t("hist.more_hidden", { n: b.title_count - b.titles.length })));
+  row.classList.add("expandable");
+  row.onclick = () => {
+    details.hidden = !details.hidden;
+    row.classList.toggle("open", !details.hidden);
+  };
+  const wrap = el("div", "block");
+  wrap.append(row, details);
+  return wrap;
+}
+
 async function copyText(text, btn) {
   let ok = true;
   try {
@@ -208,9 +259,7 @@ function renderHistory() {
   let rows;
   let empty;
   if (tab === "windows") {
-    rows = timelineData
-      .filter((s) => matches(q, appName(s.app), s.title))
-      .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${appName(s.app)} — ${s.title}` : appName(s.app), shortDuration(s.end - s.start)));
+    rows = timelineWithMarks(q);
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
     clipRows = clipData.filter((c) => matches(q, appName(c.app), c.text));
@@ -272,6 +321,7 @@ async function render() {
 
   bars($("categories"), s.by_category.map((c) => ({ label: categoryName(c.category), secs: c.secs })));
   bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs })));
+  bars($("sites"), s.sites.map((x) => ({ label: x.site || t("sites.other"), secs: x.secs })));
   bars($("goals"), s.goals.map((g) => ({
     label: categoryName(g.category),
     secs: Math.min(g.used_mins, g.limit_mins) * 60,
