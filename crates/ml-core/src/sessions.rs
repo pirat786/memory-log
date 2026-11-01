@@ -1,5 +1,5 @@
 use crate::categorize::Categorizer;
-use crate::model::{Category, Sample, Session};
+use crate::model::{Sample, Session};
 
 /// Если между снимками больше этого времени, считаем, что программа не работала.
 /// Снимки идут раз в 3 секунды, но Windows может притормаживать фоновую программу,
@@ -7,10 +7,9 @@ use crate::model::{Category, Sample, Session};
 pub const MAX_GAP_SECS: i64 = 90;
 /// Сколько длится последний снимок, у которого нет следующего.
 pub const TAIL_SECS: i64 = 3;
-/// Без нажатий и движений мыши дольше этого человек считается отошедшим.
-pub const IDLE_SECS: u32 = 10 * 60;
-/// Видео и музыку смотрят без нажатий, поэтому для развлечений порог больше.
-pub const MEDIA_IDLE_SECS: u32 = 45 * 60;
+/// Без нажатий и движений мыши дольше этого человек считается отошедшим, и это перерыв.
+/// Час, а не минуты: так чтение, просмотр видео и звонки без касаний не считаются перерывом.
+pub const IDLE_SECS: u32 = 60 * 60;
 
 /// Склеивает снимки в непрерывные сессии. Время, когда человека не было, в сессии не попадает.
 /// `samples` должны быть отсортированы по времени.
@@ -19,7 +18,7 @@ pub fn sessionize(samples: &[Sample], categorizer: &Categorizer) -> Vec<Session>
 }
 
 /// То же, что `sessionize`, и ещё сколько секунд человека не было за компьютером.
-/// Первые `IDLE_SECS` без ввода считаются активными (человек мог читать), отсчёт «не было» идёт после них.
+/// Первый час без ввода считается активным (человек мог читать или смотреть), отсчёт «не было» идёт после него.
 pub fn sessionize_with_away(samples: &[Sample], categorizer: &Categorizer) -> (Vec<Session>, i64) {
     let mut out: Vec<Session> = Vec::new();
     let mut away = 0i64;
@@ -31,12 +30,11 @@ pub fn sessionize_with_away(samples: &[Sample], categorizer: &Categorizer) -> (V
         if dur == 0 {
             continue;
         }
-        let category = categorizer.categorize(&s.app, &s.title);
-        let limit = if category == Category::Entertainment { MEDIA_IDLE_SECS } else { IDLE_SECS };
-        if s.idle_secs >= limit {
+        if s.idle_secs >= IDLE_SECS {
             away += dur;
             continue;
         }
+        let category = categorizer.categorize(&s.app, &s.title);
         if let Some(last) = out.last_mut() {
             if last.app == s.app && last.title == s.title && s.ts <= last.end {
                 last.end = s.ts + dur;
@@ -110,24 +108,11 @@ mod tests {
     }
 
     #[test]
-    fn video_gets_a_longer_leash_than_documents() {
+    fn up_to_an_hour_without_input_still_counts_as_active() {
         let c = Categorizer::with_defaults();
-        let quiet = IDLE_SECS + 60;
-        // Без ввода 11 минут: документ — отошёл, видео на YouTube — смотрит.
-        let doc = vec![idle_sample(0, "winword", quiet), idle_sample(3, "winword", quiet)];
-        assert_eq!(sessionize_with_away(&doc, &c).1, 6);
-
-        let mut video = vec![sample(0, "chrome", "Cats - YouTube"), sample(3, "chrome", "Cats - YouTube")];
-        for s in &mut video {
-            s.idle_secs = quiet;
-        }
-        let (s, away) = sessionize_with_away(&video, &c);
+        let samples = vec![idle_sample(0, "winword", 50 * 60), idle_sample(3, "winword", 50 * 60 + 3)];
+        let (s, away) = sessionize_with_away(&samples, &c);
         assert_eq!(away, 0);
         assert_eq!(s.len(), 1);
-
-        for s in &mut video {
-            s.idle_secs = MEDIA_IDLE_SECS + 1;
-        }
-        assert_eq!(sessionize_with_away(&video, &c).1, 6);
     }
 }
