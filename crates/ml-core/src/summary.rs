@@ -43,6 +43,8 @@ pub struct GoalProgress {
 pub struct DayInput<'a> {
     pub date: &'a str,
     pub sessions: &'a [Session],
+    /// Сколько секунд человека не было за компьютером (см. `sessions::sessionize_with_away`).
+    pub away_secs: i64,
     pub bookmarks: Vec<Bookmark>,
     pub system: &'a [SystemSample],
     pub procs: &'a [ProcSample],
@@ -55,6 +57,7 @@ pub struct DayInput<'a> {
 pub struct DaySummary {
     pub date: String,
     pub active_secs: i64,
+    pub away_secs: i64,
     pub by_category: Vec<CategoryTime>,
     pub top_apps: Vec<AppTime>,
     pub focus_blocks: Vec<FocusBlock>,
@@ -102,6 +105,7 @@ pub fn build(input: DayInput) -> DaySummary {
     DaySummary {
         date: input.date.to_string(),
         active_secs: sessions.iter().map(Session::secs).sum(),
+        away_secs: input.away_secs,
         by_category,
         top_apps,
         focus_blocks: focus_blocks(sessions),
@@ -198,6 +202,7 @@ mod tests {
         let s = build(DayInput {
             date: "2026-10-27",
             sessions: &sessions,
+            away_secs: 120,
             bookmarks: vec![],
             system: &[],
             procs: &[],
@@ -206,6 +211,7 @@ mod tests {
             goals: &goals,
         });
         assert_eq!(s.active_secs, 1550);
+        assert_eq!(s.away_secs, 120);
         assert_eq!(s.top_apps[0].app, "winword");
         assert_eq!(s.focus_blocks.len(), 1);
         assert_eq!(s.focus_blocks[0].end, 1500);

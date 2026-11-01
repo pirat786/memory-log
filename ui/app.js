@@ -76,9 +76,10 @@ function cards(target, items, emptyText) {
   }
 }
 
-function renderRhythm(r) {
-  if (!r) return "";
+function renderRhythm(r, awaySecs) {
+  if (!r) return awaySecs >= 60 ? t("rhythm.away", { v: duration(awaySecs) }) : "";
   const parts = [t("rhythm.range", { from: clock(r.first_ts), to: clock(r.last_ts) })];
+  if (awaySecs >= 60) parts.push(t("rhythm.away", { v: duration(awaySecs) }));
   parts.push(r.breaks.length
     ? t("rhythm.breaks", { n: r.breaks.length, v: duration(r.break_secs) })
     : t("rhythm.nobreaks"));
@@ -313,7 +314,7 @@ async function render() {
 
   const s = await invoke("day_summary", { date: iso(current) });
   $("total").textContent = duration(s.active_secs);
-  $("rhythm").textContent = renderRhythm(s.rhythm);
+  $("rhythm").textContent = renderRhythm(s.rhythm, s.away_secs);
 
   timelineData = s.timeline;
   clipData = s.clips;

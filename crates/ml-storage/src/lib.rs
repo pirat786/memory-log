@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/004_drop_idle.sql"),
     include_str!("../migrations/005_clipboard.sql"),
     include_str!("../migrations/006_clipboard_unique.sql"),
+    include_str!("../migrations/007_idle_secs.sql"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -68,7 +69,7 @@ fn quarantine(path: &Path) -> Result<std::path::PathBuf> {
 }
 
 fn read_sample(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
-    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)? })
+    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)?, idle_secs: r.get(3)? })
 }
 
 impl Storage {
@@ -120,8 +121,8 @@ impl Storage {
 
     pub fn insert_sample(&self, s: &Sample) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO samples (ts, app, title) VALUES (?1, ?2, ?3)",
-            params![s.ts, s.app, s.title],
+            "INSERT INTO samples (ts, app, title, idle_secs) VALUES (?1, ?2, ?3, ?4)",
+            params![s.ts, s.app, s.title, s.idle_secs],
         )?;
         Ok(())
     }
@@ -129,13 +130,13 @@ impl Storage {
     pub fn samples_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<Sample>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT ts, app, title FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
+            .prepare("SELECT ts, app, title, idle_secs FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts")?;
         let rows = stmt.query_map(params![from, to], read_sample)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn last_sample(&self) -> Result<Option<Sample>> {
-        let mut stmt = self.conn.prepare("SELECT ts, app, title FROM samples ORDER BY ts DESC LIMIT 1")?;
+        let mut stmt = self.conn.prepare("SELECT ts, app, title, idle_secs FROM samples ORDER BY ts DESC LIMIT 1")?;
         let mut rows = stmt.query_map([], read_sample)?;
         Ok(rows.next().transpose()?)
     }
@@ -330,7 +331,7 @@ mod tests {
     use super::*;
 
     fn sample(ts: i64, app: &str, title: &str) -> Sample {
-        Sample { ts, app: app.into(), title: title.into() }
+        Sample { ts, app: app.into(), title: title.into(), idle_secs: 0 }
     }
 
     #[test]

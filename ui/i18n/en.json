@@ -33,6 +33,7 @@
   "hist.more": "Showing the first {n} of {total}. Refine your query.",
   "hist.more_titles": "(+{n} more)",
   "hist.more_hidden": "…and {n} more windows not shown",
+  "rhythm.away": "away from the PC: {v}",
   "sec.sites": "Websites",
   "sites.other": "Other sites",
   "sites.note": "Recognised from browser tab titles, so only well-known sites are named.",

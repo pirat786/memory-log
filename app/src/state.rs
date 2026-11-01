@@ -164,10 +164,11 @@ impl AppState {
                 st.clips_between(from, to).map_err(e)?,
             )
         };
-        let sessions = sessions::sessionize(&samples, &self.categorizer);
+        let (sessions, away_secs) = sessions::sessionize_with_away(&samples, &self.categorizer);
         Ok(summary::build(DayInput {
             date: &date.to_string(),
             sessions: &sessions,
+            away_secs,
             bookmarks,
             system: &system,
             procs: &procs,
