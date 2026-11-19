@@ -29,7 +29,11 @@ pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
             "mark" => {
                 let _ = state.add_bookmark("");
             }
-            "pause" => state.set_paused(!state.is_paused()),
+            "pause" => {
+                if let Err(err) = state.set_paused(!state.is_paused()) {
+                    crate::log::info(&err);
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })

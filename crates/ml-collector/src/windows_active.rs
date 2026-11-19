@@ -1,12 +1,43 @@
 use ml_core::Sample;
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows::Win32::System::StationsAndDesktops::{
+    CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, UOI_NAME,
+};
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
 use crate::Collector;
+
+/// Читает время последнего ввода в сеансе, без перехвата клавиш или мыши.
+pub fn idle_seconds() -> Option<u32> {
+    let mut input = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe { GetLastInputInfo(&mut input).as_bool().then(|| GetTickCount().wrapping_sub(input.dwTime) / 1000) }
+}
+
+/// На экране блокировки и защищённом рабочем столе обычные окна не активны.
+pub fn interactive_desktop() -> bool {
+    unsafe {
+        let Ok(desktop) = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) else {
+            return false;
+        };
+        let mut name = [0u16; 128];
+        let result = GetUserObjectInformationW(
+            HANDLE(desktop.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr().cast()),
+            std::mem::size_of_val(&name) as u32,
+            None,
+        );
+        let _ = CloseDesktop(desktop);
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        result.is_ok() && String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("Default")
+    }
+}
 
 pub struct ActiveWindowCollector;
 

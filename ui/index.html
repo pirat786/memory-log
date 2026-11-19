@@ -7,106 +7,167 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <div class="nav">
-      <button id="prev" data-i18n-title="nav.prev">‹</button>
-      <h1 id="date" data-i18n="nav.today"></h1>
-      <button id="next" data-i18n-title="nav.next">›</button>
-    </div>
-    <div class="actions">
-      <span id="status" class="status muted"></span>
-      <select id="lang" aria-label="Language" data-i18n-title="lang.label"></select>
-      <button id="mark" data-i18n="btn.mark"></button>
-      <button id="pause" data-i18n="btn.pause"></button>
-    </div>
-  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Memory Log</div>
+      <nav class="views" data-i18n-label="view.label">
+        <button type="button" data-view="day" aria-controls="dayView" aria-current="page">
+          <span class="nav-icon icon-day" aria-hidden="true"></span><span data-i18n="view.day"></span>
+        </button>
+        <button type="button" data-view="history" aria-controls="historyView">
+          <span class="nav-icon icon-history" aria-hidden="true"></span><span data-i18n="view.history"></span>
+        </button>
+        <button type="button" data-view="system" aria-controls="systemView">
+          <span class="nav-icon icon-system" aria-hidden="true"></span><span data-i18n="view.system"></span>
+        </button>
+        <button type="button" data-view="settings" aria-controls="settingsView">
+          <span class="nav-icon icon-settings" aria-hidden="true"></span><span data-i18n="view.settings"></span>
+        </button>
+      </nav>
+    </aside>
 
-  <main>
-    <section id="errorBox" class="error" hidden></section>
-
-    <section class="hero">
-      <div class="big" id="total">—</div>
-      <div class="muted" data-i18n="hero.caption"></div>
-      <div class="muted" id="rhythm"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="hist.title"></h2>
-      <div class="tabs" role="tablist">
-        <button class="tab active" data-tab="windows" data-i18n="hist.tab.windows"></button>
-        <button class="tab" data-tab="clips" data-i18n="hist.tab.clips"></button>
-        <button class="tab" data-tab="all" data-i18n="hist.tab.all"></button>
+    <main>
+      <header class="page-header">
+        <h1 id="pageTitle" tabindex="-1" data-i18n="view.day"></h1>
+        <div class="actions">
+          <span id="status" class="status" role="status"></span>
+          <button id="pause" data-i18n="btn.pause"></button>
+          <button id="mark" class="primary" data-i18n="btn.mark"></button>
+        </div>
+      </header>
+      <div id="dateNav" class="date-nav">
+        <button id="prev" type="button" data-i18n-label="nav.prev">‹</button>
+        <span id="date" data-i18n="nav.today"></span>
+        <button id="next" type="button" data-i18n-label="nav.next">›</button>
       </div>
-      <input id="q" type="search" autocomplete="off">
-      <div class="note-row"><div id="tabNote" class="muted small-text"></div><button id="clearClips" class="small" data-i18n="hist.clear" hidden></button></div>
-      <div id="list" class="timeline"></div>
-    </section>
+      <div id="errorBox" class="error" role="alert" hidden></div>
 
-    <section>
-      <h2 data-i18n="sec.activity"></h2>
-      <div id="categories" class="bars"></div>
-      <h3 data-i18n="sec.goals"></h3>
-      <div id="goals"></div>
-      <button id="addGoal" class="small" data-i18n="goal.add"></button>
-    </section>
+      <div id="dayView" class="view" aria-labelledby="pageTitle">
+        <section class="hero" aria-labelledby="dayTrackTitle">
+          <h2 id="dayTrackTitle" data-i18n="track.title"></h2>
+          <div class="activity-total">
+            <div class="big" id="total">—</div>
+            <div class="muted" data-i18n="hero.caption"></div>
+          </div>
+          <div class="muted" id="rhythm"></div>
+          <div id="dayTrack" class="day-track" role="group" aria-labelledby="dayTrackTitle">
+            <div id="trackSegments" class="track-segments"></div>
+            <div id="trackBookmarks" class="track-bookmarks"></div>
+          </div>
+          <div id="trackHours" class="track-hours" aria-hidden="true"></div>
+          <div id="trackLegend" class="track-legend"></div>
+        </section>
 
-    <section>
-      <h2 data-i18n="sec.focus"></h2>
-      <div id="focus"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.bookmarks"></h2>
-      <div id="bookmarks"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.load"></h2>
-      <div id="load" class="cards"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.net"></h2>
-      <div id="net" class="cards"></div>
-      <div id="hours" class="chart"></div>
-      <div class="muted small-text" data-i18n="net.note"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.procs"></h2>
-      <div id="procs"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.health"></h2>
-      <div id="health"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.downloads"></h2>
-      <div id="downloads"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.apps"></h2>
-      <div id="apps" class="bars"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.week"></h2>
-      <div id="week" class="bars"></div>
-    </section>
-
-    <section>
-      <h2 data-i18n="sec.tools"></h2>
-      <div class="tools">
-        <button id="export" data-i18n="tools.export"></button>
-        <button id="forget" data-i18n="tools.forget"></button>
-        <label><input type="checkbox" id="autostart"> <span data-i18n="tools.autostart"></span></label>
+        <div class="overview-grid">
+          <section>
+            <h2 data-i18n="sec.activity"></h2>
+            <div id="categories" class="bars"></div>
+          </section>
+          <section>
+            <h2 data-i18n="sec.week"></h2>
+            <div id="week"></div>
+          </section>
+          <section>
+            <h2 data-i18n="sec.apps"></h2>
+            <div id="apps" class="bars"></div>
+          </section>
+          <section>
+            <h2 data-i18n="sec.focus"></h2>
+            <div id="focus"></div>
+          </section>
+          <section class="wide">
+            <div class="card-heading">
+              <h2 data-i18n="sec.goals"></h2>
+              <button id="addGoal" class="small" data-i18n="goal.add"></button>
+            </div>
+            <div id="goals"></div>
+          </section>
+        </div>
       </div>
-      <div id="toolMsg" class="muted"></div>
-    </section>
-  </main>
+
+      <div id="historyView" class="view" aria-labelledby="pageTitle" hidden>
+        <section class="history-panel">
+          <div class="history-header">
+            <div class="tabs" role="group" data-i18n-label="hist.title">
+              <button class="tab active" data-tab="windows" aria-pressed="true" data-i18n="hist.tab.windows"></button>
+              <button class="tab" data-tab="clips" aria-pressed="false" data-i18n="hist.tab.clips"></button>
+              <button class="tab" data-tab="bookmarks" aria-pressed="false" data-i18n="sec.bookmarks"></button>
+              <button class="tab" data-tab="downloads" aria-pressed="false" data-i18n="sec.downloads"></button>
+              <button class="tab" data-tab="all" aria-pressed="false" data-i18n="hist.tab.all"></button>
+            </div>
+            <button id="export" class="small" data-i18n="tools.export"></button>
+          </div>
+          <div id="exportMsg" class="muted" role="status"></div>
+          <div id="historyFilter">
+            <div id="historyRange" class="range-filter" hidden>
+              <span id="rangeLabel"></span>
+              <button id="clearRange" type="button" data-i18n="track.clear"></button>
+            </div>
+            <input id="q" type="search" autocomplete="off" data-i18n-label="hist.search">
+            <div class="note-row">
+              <div id="tabNote" class="muted small-text"></div>
+              <button id="clearClips" class="small" data-i18n="hist.clear" hidden></button>
+            </div>
+            <div id="list" class="timeline"></div>
+          </div>
+          <div id="bookmarks" class="timeline" hidden></div>
+          <div id="downloads" class="timeline" hidden></div>
+        </section>
+      </div>
+
+      <div id="systemView" class="view" aria-labelledby="pageTitle" hidden>
+        <div class="system-grid">
+          <section>
+            <h2 data-i18n="sec.load"></h2>
+            <div id="load" class="cards"></div>
+          </section>
+          <section>
+            <h2 data-i18n="sec.health"></h2>
+            <div id="health"></div>
+          </section>
+          <section class="wide">
+            <h2 data-i18n="sec.net"></h2>
+            <div id="net" class="cards"></div>
+            <div id="hours" class="chart"></div>
+            <div class="muted small-text" data-i18n="net.note"></div>
+          </section>
+          <section class="wide">
+            <h2 data-i18n="sec.procs"></h2>
+            <div id="procs"></div>
+          </section>
+        </div>
+      </div>
+
+      <div id="settingsView" class="view" aria-labelledby="pageTitle" hidden>
+        <div id="toolMsg" class="settings-feedback muted" role="status"></div>
+        <section class="settings-card" aria-labelledby="generalTitle">
+          <h2 id="generalTitle" data-i18n="settings.general"></h2>
+          <div class="setting-row">
+            <label for="lang" data-i18n="lang.label"></label>
+            <select id="lang"></select>
+          </div>
+          <label class="setting-row">
+            <span data-i18n="tools.autostart"></span>
+            <input id="autostart" type="checkbox">
+          </label>
+        </section>
+        <section class="settings-card" aria-labelledby="recordingTitle">
+          <h2 id="recordingTitle" data-i18n="settings.recording"></h2>
+          <form id="idleSettings" class="setting-row">
+            <label for="idleMinutes" data-i18n="idle.label"></label>
+            <div class="setting-actions">
+              <input id="idleMinutes" type="number" min="1" max="60" step="1" required disabled>
+              <button id="saveIdle" type="submit" disabled data-i18n="common.save"></button>
+            </div>
+          </form>
+        </section>
+        <section class="settings-card" aria-labelledby="dataTitle">
+          <h2 id="dataTitle" data-i18n="settings.data"></h2>
+          <button id="forget" class="danger" data-i18n="tools.forget"></button>
+        </section>
+      </div>
+    </main>
+  </div>
 
   <dialog id="noteDlg">
     <form method="dialog">

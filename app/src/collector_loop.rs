@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use ml_collector::{ClipboardWatcher, SystemCollector};
 use ml_core::privacy::{looks_like_secret, HIDDEN_APP};
-use ml_core::{ClipEntry, PrivacyFilter, Sample};
+use ml_core::{ClipEntry, PrivacyFilter};
 
 use crate::log;
 use crate::state::AppState;
@@ -28,7 +29,8 @@ pub fn spawn(state: Arc<AppState>) {
         let mut windows = ml_collector::default_collector();
         let mut system = SystemCollector::new();
         let mut clipboard = ClipboardWatcher::new();
-        let mut last_window: Option<Sample> = None;
+        let mut break_recorded = false;
+        let mut last_window_app = String::new();
         let privacy = PrivacyFilter::default();
         // Instant отсчитывается от запуска Windows, поэтому вычитание из него паникует,
         // если ПК включён недавно. Берём «давно» через checked_sub.
@@ -43,7 +45,8 @@ pub fn spawn(state: Arc<AppState>) {
             // Если поток «проспал» намного дольше обычного (сон ПК, троттлинг Windows), пишем это в журнал.
             let slept = last_tick.elapsed();
             last_tick = Instant::now();
-            if slept > Duration::from_secs(30) {
+            let interrupted = slept > Duration::from_secs(30);
+            if interrupted {
                 log::info(&format!("сборщик не работал {} сек (сон ПК или замедление Windows)", slept.as_secs()));
             }
             if last_prune.elapsed() >= PRUNE_EVERY {
@@ -56,50 +59,61 @@ pub fn spawn(state: Arc<AppState>) {
                 }
             }
 
-            // Буфер опрашиваем и на паузе, чтобы скопированное во время паузы не записалось после неё.
-            let copied = clipboard.poll(state.clip_ignore.load(std::sync::atomic::Ordering::Relaxed));
-            if !state.is_paused() {
-                let mut result = Ok(());
-                if let Some(sample) = windows.sample() {
-                    let sample = privacy.apply(sample);
-                    last_window = Some(sample.clone());
-                    result = state
-                        .storage
-                        .lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|st| st.insert_sample(&sample).map_err(|e| e.to_string()));
+            let mut result = (|| -> Result<(), String> {
+                // Один замок для записи окна и постановки на паузу сохраняет порядок событий.
+                let storage = state.storage.lock().map_err(|e| e.to_string())?;
+                // Буфер опрашиваем и на паузе, чтобы скопированное во время паузы не записалось после неё.
+                let copied = clipboard.poll(state.clip_ignore.load(Ordering::Relaxed));
+                if state.is_paused() {
+                    return Ok(());
                 }
-                if let (Some(text), true) = (copied, result.is_ok()) {
-                    // Окно, где копировали, считаем скрытым по тем же правилам, что и заголовки: текст из него не пишем.
-                    let app = last_window.as_ref().map_or_else(String::new, |w| w.app.clone());
-                    if app != HIDDEN_APP && !looks_like_secret(&text) {
-                        let entry = ClipEntry { ts: Utc::now().timestamp(), app, text };
-                        result = state
-                            .storage
-                            .lock()
-                            .map_err(|e| e.to_string())
-                            .and_then(|st| st.insert_clip(&entry).map_err(|e| e.to_string()));
+                let interactive = ml_collector::interactive_desktop();
+                let threshold = state.idle_minutes.load(Ordering::Relaxed) * 60;
+                let inactive = !interactive || ml_collector::idle_seconds().is_some_and(|secs| secs >= threshold);
+                state.inactive.store(inactive, Ordering::Relaxed);
+                if (inactive || interrupted) && !break_recorded {
+                    storage.insert_activity_break(Utc::now().timestamp()).map_err(|e| e.to_string())?;
+                    break_recorded = true;
+                }
+                if !interactive {
+                    last_window_app.clear();
+                    return Ok(());
+                }
+                if let Some(sample) = windows.sample().map(|s| privacy.apply(s)) {
+                    if !inactive {
+                        storage.insert_sample(&sample).map_err(|e| e.to_string())?;
+                        break_recorded = false;
+                    }
+                    last_window_app = sample.app;
+                }
+                if let Some(text) = copied {
+                    if last_window_app != HIDDEN_APP && !looks_like_secret(&text) {
+                        let entry = ClipEntry { ts: Utc::now().timestamp(), app: last_window_app.clone(), text };
+                        storage.insert_clip(&entry).map_err(|e| e.to_string())?;
                     }
                 }
-                if result.is_ok() && last_system.elapsed() >= SYSTEM_TICK {
-                    last_system = Instant::now();
-                    let (sample, procs) = system.snapshot();
-                    result = state
-                        .storage
-                        .lock()
-                        .map_err(|e| e.to_string())
-                        .and_then(|st| st.insert_system(&sample, &procs).map_err(|e| e.to_string()));
-                }
-                match result {
-                    Ok(()) => errors = 0,
-                    Err(e) => {
-                        if e.contains("malformed") || e.contains("not a database") {
-                            state.recover_database();
-                        }
-                        errors += 1;
-                        if errors <= MAX_LOGGED_ERRORS {
-                            log::info(&format!("ошибка записи: {e}"));
-                        }
+                Ok(())
+            })();
+            if result.is_ok() && !state.is_paused() && last_system.elapsed() >= SYSTEM_TICK {
+                last_system = Instant::now();
+                let (sample, procs) = system.snapshot();
+                result = state.storage.lock().map_err(|e| e.to_string()).and_then(|st| {
+                    if state.is_paused() {
+                        return Ok(());
+                    }
+                    st.insert_system(&sample, &procs).map_err(|e| e.to_string())
+                });
+            }
+            match result {
+                Ok(()) => errors = 0,
+                Err(e) => {
+                    if e.contains("malformed") || e.contains("not a database") {
+                        state.recover_database();
+                        break_recorded = false;
+                    }
+                    errors += 1;
+                    if errors <= MAX_LOGGED_ERRORS {
+                        log::info(&format!("ошибка записи: {e}"));
                     }
                 }
             }

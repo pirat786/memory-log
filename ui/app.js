@@ -18,8 +18,9 @@ const clock = (ts) => new Date(ts * 1000).toLocaleTimeString(I18N.locale, { hour
 const pct = (v) => `${Math.round(v)}%`;
 
 function duration(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.round((secs % 3600) / 60);
+  const minutes = Math.round(secs / 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
   if (h && m) return `${h} ${t("unit.h")} ${m} ${t("unit.min")}`;
   if (h) return `${h} ${t("unit.h")}`;
   return `${m} ${t("unit.min")}`;
@@ -49,6 +50,7 @@ function bars(target, rows) {
   const max = Math.max(...rows.map((r) => r.secs), 1);
   for (const r of rows) {
     const row = el("div", "bar");
+    if (r.category) row.dataset.category = r.category;
     const track = el("div", "track");
     const fill = el("div", r.over ? "fill over" : "fill");
     fill.style.width = `${(r.secs / max) * 100}%`;
@@ -135,10 +137,14 @@ function renderHealth(h) {
 }
 
 const HISTORY_LIMIT = 300;
+const HISTORY_MIN_SECS = 15;
 let timelineData = [];
 let clipData = [];
 let allHits = [];
 let tab = "windows";
+let activeView = "day";
+let selectedRange = null;
+const viewButtons = document.querySelectorAll("[data-view]");
 // Выбранная запись буфера (Ctrl+↑/↓ двигают, Enter копирует).
 let clipSel = 0;
 let clipRows = [];
@@ -147,6 +153,129 @@ const tabPlaceholder = (name) => t(`hist.ph.${name}`);
 const tabNoteText = (name) => (name === "windows" ? "" : t(`hist.note.${name}`));
 
 const matches = (q, ...fields) => !q || fields.some((f) => f.toLowerCase().includes(q));
+
+function setView(view) {
+  if (activeView !== view) window.scrollTo(0, 0);
+  activeView = view;
+  for (const button of viewButtons) {
+    const active = button.dataset.view === view;
+    $(button.getAttribute("aria-controls")).hidden = !active;
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  const title = $("pageTitle");
+  title.dataset.i18n = `view.${view}`;
+  title.textContent = t(title.dataset.i18n);
+  $("dateNav").hidden = view === "settings";
+}
+
+function selectRange(range) {
+  selectedRange = range;
+  if (range) {
+    setView("history");
+    $("q").value = "";
+    setTab("windows");
+  } else {
+    renderHistory();
+  }
+  for (const segment of $("trackSegments").children) {
+    segment.setAttribute("aria-pressed", segment.dataset.start === String(range?.start));
+  }
+  if (range) $("pageTitle").focus({ preventScroll: true });
+  else $("q").focus();
+}
+
+function setTrackPosition(node, start, end, from, to) {
+  node.style.insetInlineStart = `${(start - from) / (to - from) * 100}%`;
+  if (end !== null) node.style.inlineSize = `${(end - start) / (to - from) * 100}%`;
+}
+
+function bookmarkLabel(b) {
+  return [clock(b.ts), appName(b.app), b.title, b.note].filter(Boolean).join(" · ");
+}
+
+function renderDayTrack(summary, dayChanged) {
+  const { day_start: from, day_end: to, timeline, bookmarks } = summary;
+  const track = $("trackSegments");
+  const markers = $("trackBookmarks");
+  // Соседние окна одной категории образуют один отрезок, промежутки остаются видимыми.
+  const ranges = [];
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const { start, end, category } = timeline[i];
+    const previous = ranges.at(-1);
+    if (previous?.end === start && previous.category === category) previous.end = end;
+    else ranges.push({ start, end, category });
+  }
+
+  const axes = $("trackHours");
+  axes.replaceChildren();
+  for (const hour of [0, 6, 12, 18, 24]) {
+    const date = new Date(from * 1000);
+    date.setHours(hour, 0, 0, 0);
+    const tick = el("span", "", `${String(hour).padStart(2, "0")}:00`);
+    tick.dataset.edge = hour === 0 ? "start" : hour === 24 ? "end" : "";
+    setTrackPosition(tick, date.getTime() / 1000, null, from, to);
+    axes.append(tick);
+  }
+
+  const used = new Set(ranges.map((range) => range.category));
+  const legend = $("trackLegend");
+  legend.replaceChildren();
+  for (const category of CATEGORIES.filter((category) => used.has(category))) {
+    const item = el("span", "legend-item", categoryName(category));
+    item.dataset.category = category;
+    legend.append(item);
+  }
+  legend.append(el("span", "legend-item", t("track.gap")));
+  if (bookmarks.length) legend.append(el("span", "legend-item legend-bookmark", t("sec.bookmarks")));
+
+  if (!dayChanged && $("dayTrack").contains(document.activeElement)) return;
+  track.replaceChildren();
+  markers.replaceChildren();
+  for (const [index, range] of ranges.entries()) {
+    const { start, end, category } = range;
+    const btn = el("button", "track-segment");
+    btn.type = "button";
+    btn.dataset.category = category;
+    btn.dataset.start = start;
+    btn.title = t("track.range", { start: clock(start), end: clock(end), category: categoryName(category) });
+    btn.setAttribute("aria-label", btn.title);
+    btn.setAttribute("aria-pressed", start === selectedRange?.start);
+    btn.tabIndex = index === 0 ? 0 : -1;
+    btn.onclick = () => selectRange(range);
+    setTrackPosition(btn, start, end, from, to);
+    track.append(btn);
+  }
+  for (const [index, bookmark] of bookmarks.entries()) {
+    const btn = el("button", "track-bookmark");
+    btn.type = "button";
+    btn.title = bookmarkLabel(bookmark);
+    btn.setAttribute("aria-label", t("track.bookmark", { label: btn.title }));
+    btn.onclick = () => {
+      setView("history");
+      setTab("bookmarks");
+      $("bookmarks").children[index]?.focus();
+    };
+    setTrackPosition(btn, bookmark.ts, null, from, to);
+    markers.append(btn);
+  }
+}
+
+$("trackSegments").onkeydown = (event) => {
+  const track = $("trackSegments");
+  const btn = event.target;
+  const next = {
+    ArrowLeft: btn.previousElementSibling,
+    ArrowRight: btn.nextElementSibling,
+    Home: track.firstElementChild,
+    End: track.lastElementChild,
+  }[event.key];
+  if (!next) return;
+  event.preventDefault();
+  btn.tabIndex = -1;
+  next.tabIndex = 0;
+  next.focus();
+};
 
 function shortDuration(secs) {
   return secs < 60 ? `${secs} ${t("unit.sec")}` : duration(secs);
@@ -200,15 +329,24 @@ function clipHint() {
 
 // Одна лента на три режима: окна дня, буфер обмена и поиск по всем дням.
 function renderHistory() {
+  if (tab === "bookmarks" || tab === "downloads") return;
   const q = $("q").value.trim().toLowerCase();
   const target = $("list");
   target.replaceChildren();
   $("clearClips").hidden = true;
+  const range = tab === "windows" ? selectedRange : null;
+  $("historyRange").hidden = !range;
+  if (range) {
+    $("rangeLabel").textContent = t("track.range", {
+      start: clock(range.start), end: clock(range.end), category: categoryName(range.category),
+    });
+  }
 
   let rows;
   let empty;
   if (tab === "windows") {
     rows = timelineData
+      .filter((s) => range ? s.start < range.end && s.end > range.start : s.end - s.start >= HISTORY_MIN_SECS)
       .filter((s) => matches(q, appName(s.app), s.title))
       .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${appName(s.app)} — ${s.title}` : appName(s.app), shortDuration(s.end - s.start)));
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
@@ -240,37 +378,77 @@ function renderHistory() {
 function setTab(name) {
   tab = name;
   clipSel = 0;
-  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
-  $("q").placeholder = tabPlaceholder(name);
-  $("tabNote").textContent = tabNoteText(name);
+  for (const b of document.querySelectorAll(".tab")) {
+    const active = b.dataset.tab === name;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-pressed", active);
+  }
+  const hasFilter = name !== "bookmarks" && name !== "downloads";
+  $("historyFilter").hidden = !hasFilter;
+  $("bookmarks").hidden = name !== "bookmarks";
+  $("downloads").hidden = name !== "downloads";
+  if (hasFilter) {
+    $("q").placeholder = tabPlaceholder(name);
+    $("tabNote").textContent = tabNoteText(name);
+  }
   searchAll();
   renderHistory();
 }
 
 async function renderWeek() {
   const days = await invoke("week_overview");
-  bars($("week"), days.map((d) => ({
-    label: new Date(d.date + "T00:00:00").toLocaleDateString(I18N.locale, { weekday: "short", day: "numeric" }),
-    secs: d.active_secs,
-    value: d.active_secs ? duration(d.active_secs) : "—",
-  })));
+  const target = $("week");
+  const peak = Math.max(...days.map((d) => d.active_secs), 1);
+  const chart = el("div", "week-chart");
+  for (const day of days) {
+    const date = new Date(day.date + "T12:00:00");
+    const button = el("button", "week-day");
+    button.type = "button";
+    button.dataset.weekDate = day.date;
+    if (day.top_category) button.dataset.category = day.top_category;
+    button.title = `${date.toLocaleDateString(I18N.locale, { weekday: "long", day: "numeric", month: "long" })} · ${shortDuration(day.active_secs)}`;
+    button.setAttribute("aria-label", button.title);
+    if (day.date === iso(current)) button.setAttribute("aria-current", "date");
+    const track = el("span", "week-track");
+    const fill = el("span", "week-fill");
+    fill.style.height = `${day.active_secs / peak * 100}%`;
+    track.append(fill);
+    button.append(track, el("span", "week-label", date.toLocaleDateString(I18N.locale, { weekday: "short" })));
+    button.onclick = () => goToDate(date);
+    chart.append(button);
+  }
+  target.replaceChildren(days.length ? chart : note(t("common.nodata")));
 }
 
+let renderRequest = 0;
+let renderedDate;
+
 async function render() {
+  const request = ++renderRequest;
   if (followToday) current = new Date();
-  const isToday = iso(current) === iso(new Date());
+  const date = iso(current);
+  const isToday = date === iso(new Date());
   $("date").textContent = isToday ? t("nav.today") : current.toLocaleDateString(I18N.locale, { day: "numeric", month: "long" });
   $("next").disabled = isToday;
+  for (const button of $("week").querySelectorAll("[data-week-date]")) {
+    if (button.dataset.weekDate === date) button.setAttribute("aria-current", "date");
+    else button.removeAttribute("aria-current");
+  }
 
-  const s = await invoke("day_summary", { date: iso(current) });
-  $("total").textContent = duration(s.active_secs);
+  const s = await invoke("day_summary", { date });
+  if (request !== renderRequest) return;
+  const dayChanged = renderedDate !== date;
+  if (dayChanged) selectedRange = null;
+  renderedDate = date;
+  $("total").textContent = s.active_secs ? shortDuration(s.active_secs) : duration(0);
   $("rhythm").textContent = renderRhythm(s.rhythm);
 
   timelineData = s.timeline;
   clipData = s.clips;
+  renderDayTrack(s, dayChanged);
   renderHistory();
 
-  bars($("categories"), s.by_category.map((c) => ({ label: categoryName(c.category), secs: c.secs })));
+  bars($("categories"), s.by_category.map((c) => ({ category: c.category, label: categoryName(c.category), secs: c.secs })));
   bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs })));
   bars($("goals"), s.goals.map((g) => ({
     label: categoryName(g.category),
@@ -282,8 +460,13 @@ async function render() {
 
   list($("focus"), s.focus_blocks.map((b) => `${appName(b.app)}: ${clock(b.start)}–${clock(b.end)} (${duration(b.end - b.start)})`),
     t("focus.empty"));
-  list($("bookmarks"), s.bookmarks.map((b) => `${clock(b.ts)} · ${appName(b.app)}${b.title ? " — " + b.title : ""}${b.note ? " · " + b.note : ""}`),
-    t("bookmarks.empty"));
+  const bookmarks = $("bookmarks");
+  const bookmarkRows = s.bookmarks.map((b) => {
+    const row = el("div", "item", bookmarkLabel(b));
+    row.tabIndex = -1;
+    return row;
+  });
+  bookmarks.replaceChildren(...(bookmarkRows.length ? bookmarkRows : [note(t("bookmarks.empty"))]));
 
   renderLoad(s.load);
   renderNet(s.net);
@@ -306,6 +489,9 @@ async function refreshStatus() {
   if (st.paused) {
     e.className = "status bad";
     e.textContent = t("status.paused");
+  } else if (st.inactive) {
+    e.className = "status inactive";
+    e.textContent = t("status.inactive");
   } else if (stale) {
     e.className = "status bad";
     e.textContent = st.last_sample_age_secs === null ? t("status.none") : t("status.stale", { age: duration(st.last_sample_age_secs) });
@@ -328,12 +514,20 @@ function toolMessage(text) {
   $("toolMsg").textContent = text;
 }
 
-$("prev").onclick = () => { followToday = false; current.setDate(current.getDate() - 1); render(); };
-$("next").onclick = () => {
-  current.setDate(current.getDate() + 1);
+function goToDate(date) {
+  current = new Date(date);
   followToday = iso(current) === iso(new Date());
-  render();
-};
+  guarded(render);
+}
+
+function shiftDate(days) {
+  const date = new Date(current);
+  date.setDate(date.getDate() + days);
+  goToDate(date);
+}
+
+$("prev").onclick = () => shiftDate(-1);
+$("next").onclick = () => shiftDate(1);
 
 $("mark").onclick = async () => {
   $("noteText").value = "";
@@ -342,11 +536,17 @@ $("mark").onclick = async () => {
   render();
 };
 
-$("pause").onclick = async () => {
+$("pause").onclick = () => guarded(async () => {
   const st = await invoke("status");
   await invoke("set_paused", { paused: !st.paused });
-  refreshStatus();
-};
+  await refreshStatus();
+  await render();
+});
+
+$("clearRange").onclick = () => selectRange(null);
+for (const button of viewButtons) {
+  button.onclick = () => setView(button.dataset.view);
+}
 
 $("addGoal").onclick = async () => {
   $("goalMin").value = "";
@@ -358,10 +558,11 @@ $("addGoal").onclick = async () => {
 };
 
 $("export").onclick = async () => {
+  const message = $("exportMsg");
   try {
-    toolMessage(t("tools.saved", { path: await invoke("export_day_csv", { date: iso(current) }) }));
+    message.textContent = t("tools.saved", { path: await invoke("export_day_csv", { date: iso(current) }) });
   } catch (e) {
-    toolMessage(t("tools.save_failed", { err: e }));
+    message.textContent = t("tools.save_failed", { err: e });
   }
 };
 
@@ -379,6 +580,20 @@ $("autostart").onchange = async (e) => {
   } catch (err) {
     e.target.checked = !e.target.checked;
     toolMessage(t("tools.autostart_failed", { err }));
+  }
+};
+
+$("idleSettings").onsubmit = async (event) => {
+  event.preventDefault();
+  const save = $("saveIdle");
+  save.disabled = true;
+  try {
+    await invoke("set_idle_minutes", { minutes: $("idleMinutes").valueAsNumber });
+    toolMessage(t("idle.saved"));
+  } catch (err) {
+    toolMessage(t("idle.error", { err }));
+  } finally {
+    save.disabled = false;
   }
 };
 
@@ -410,7 +625,7 @@ $("clearClips").onclick = async () => {
 };
 
 document.addEventListener("keydown", (e) => {
-  if (tab !== "clips" || !clipRows.length) return;
+  if (activeView !== "history" || tab !== "clips" || !clipRows.length) return;
   if (e.ctrlKey && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
     e.preventDefault();
     clipSel = Math.max(0, Math.min(clipRows.length - 1, clipSel + (e.key === "ArrowDown" ? 1 : -1)));
@@ -469,6 +684,11 @@ async function start() {
   fillLanguageControls();
   setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
+  await guarded(async () => {
+    $("idleMinutes").value = await invoke("get_idle_minutes");
+    $("idleMinutes").disabled = false;
+    $("saveIdle").disabled = false;
+  });
   await guarded(render);
   await guarded(renderWeek);
   await guarded(refreshStatus);

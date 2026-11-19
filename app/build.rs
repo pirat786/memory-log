@@ -4,7 +4,7 @@ use std::{env, fs};
 /// Языковые файлы лежат в ui/i18n/ и общие для интерфейса и Rust.
 /// Здесь они встраиваются в программу: новый язык добавляется файлом, код менять не нужно.
 fn main() {
-    println!("cargo:rerun-if-changed=../ui/i18n");
+    println!("cargo:rerun-if-changed=../ui");
 
     let mut langs: Vec<(String, String)> = Vec::new();
     for entry in fs::read_dir("../ui/i18n").expect("нет папки ui/i18n") {

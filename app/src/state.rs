@@ -16,6 +16,7 @@ use crate::log;
 #[derive(Serialize)]
 pub struct Status {
     pub paused: bool,
+    pub inactive: bool,
     pub last_sample_age_secs: Option<i64>,
 }
 
@@ -31,7 +32,9 @@ pub struct ClipNav {
 pub struct AppState {
     pub storage: Mutex<Storage>,
     pub categorizer: Categorizer,
-    pub paused: AtomicBool,
+    paused: AtomicBool,
+    pub inactive: AtomicBool,
+    pub idle_minutes: AtomicU32,
     /// Номер изменения буфера, сделанного листанием: сборщик его не записывает.
     pub clip_ignore: AtomicU32,
     pub clip_nav: Mutex<ClipNav>,
@@ -101,10 +104,13 @@ impl AppState {
         if let Some(moved) = moved {
             log::info(&format!("база была повреждена, старый файл сохранён: {}", moved.display()));
         }
+        let idle_minutes = storage.idle_minutes()?;
         Ok(Self {
             storage: Mutex::new(storage),
             categorizer: Categorizer::with_defaults(),
             paused: AtomicBool::new(false),
+            inactive: AtomicBool::new(false),
+            idle_minutes: AtomicU32::new(idle_minutes),
             clip_ignore: AtomicU32::new(0),
             clip_nav: Mutex::new(ClipNav { sel: 0, last: None, generation: 0 }),
             clip_payload: Mutex::new(None),
@@ -139,13 +145,31 @@ impl AppState {
         self.paused.load(Ordering::Relaxed)
     }
 
-    pub fn set_paused(&self, value: bool) {
-        self.paused.store(value, Ordering::Relaxed);
+    pub fn set_paused(&self, value: bool) -> Result<(), String> {
+        let storage = self.storage.lock().map_err(|e| e.to_string())?;
+        if !self.paused.swap(value, Ordering::Relaxed) && value {
+            storage.insert_activity_break(Utc::now().timestamp()).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn set_idle_minutes(&self, minutes: u32) -> Result<(), String> {
+        if !(1..=60).contains(&minutes) {
+            return Err(i18n::t(&self.lang(), "idle.invalid"));
+        }
+        let storage = self.storage.lock().map_err(|e| e.to_string())?;
+        storage.set_idle_minutes(minutes).map_err(|e| e.to_string())?;
+        self.idle_minutes.store(minutes, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn status(&self) -> Result<Status, String> {
         let last = self.storage.lock().map_err(|e| e.to_string())?.last_sample().map_err(|e| e.to_string())?;
-        Ok(Status { paused: self.is_paused(), last_sample_age_secs: last.map(|s| Utc::now().timestamp() - s.ts) })
+        Ok(Status {
+            paused: self.is_paused(),
+            inactive: self.inactive.load(Ordering::Relaxed),
+            last_sample_age_secs: last.map(|s| Utc::now().timestamp() - s.ts),
+        })
     }
 
     /// Сводка за день в формате `YYYY-MM-DD`; без даты — за сегодня.
@@ -156,7 +180,7 @@ impl AppState {
             let st = self.storage.lock().map_err(|e| e.to_string())?;
             let e = |e: ml_storage::StorageError| e.to_string();
             (
-                st.samples_between(from, to).map_err(e)?,
+                st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS).map_err(e)?,
                 st.bookmarks_between(from, to).map_err(e)?,
                 st.system_between(from, to).map_err(e)?,
                 st.procs_between(from, to).map_err(e)?,
@@ -164,9 +188,10 @@ impl AppState {
                 st.clips_between(from, to).map_err(e)?,
             )
         };
-        let sessions = sessions::sessionize(&samples, &self.categorizer);
+        let sessions = sessions::sessionize(&samples, &self.categorizer, (from, to));
         Ok(summary::build(DayInput {
             date: &date.to_string(),
+            bounds: (from, to),
             sessions: &sessions,
             bookmarks,
             system: &system,
@@ -207,8 +232,9 @@ impl AppState {
             .map(|back| {
                 let date = today - chrono::Duration::days(back);
                 let (from, to) = time::day_bounds(date);
-                let samples = st.samples_between(from, to).map_err(|e| e.to_string())?;
-                let sessions = sessions::sessionize(&samples, &self.categorizer);
+                let samples = st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
+                    .map_err(|e| e.to_string())?;
+                let sessions = sessions::sessionize(&samples, &self.categorizer, (from, to));
                 Ok(summary::week_day(&date.to_string(), &sessions))
             })
             .collect()
@@ -258,9 +284,9 @@ impl AppState {
             .storage
             .lock()
             .map_err(|e| e.to_string())?
-            .samples_between(from, to)
+            .activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
             .map_err(|e| e.to_string())?;
-        let sessions = sessions::sessionize(&samples, &self.categorizer);
+        let sessions = sessions::sessionize(&samples, &self.categorizer, (from, to));
 
         let mut csv = format!("\u{feff}{}\r\n", i18n::t(&self.lang(), "csv.header"));
         for s in &sessions {

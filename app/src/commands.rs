@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use ml_core::{DaySummary, SearchHit, WeekDay};
 use tauri::{AppHandle, Manager, State};
@@ -39,8 +39,18 @@ pub fn forget_minutes(state: Shared, minutes: u32) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn set_paused(state: Shared, paused: bool) {
-    state.set_paused(paused);
+pub fn set_paused(state: Shared, paused: bool) -> Result<(), String> {
+    state.set_paused(paused)
+}
+
+#[tauri::command]
+pub fn get_idle_minutes(state: Shared) -> u32 {
+    state.idle_minutes.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+pub fn set_idle_minutes(state: Shared, minutes: u32) -> Result<(), String> {
+    state.set_idle_minutes(minutes)
 }
 
 #[tauri::command]

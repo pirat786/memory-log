@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "memory-log"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "ml-collector",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "ml-collector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "ml-core",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "ml-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2180,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "ml-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ml-core",
  "rusqlite",

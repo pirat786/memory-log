@@ -14,6 +14,18 @@ mod windows_power;
 pub use system::SystemCollector;
 #[cfg(windows)]
 pub use windows_clipboard::{set_text as set_clipboard_text, ClipboardWatcher};
+#[cfg(windows)]
+pub use windows_active::{idle_seconds, interactive_desktop};
+
+#[cfg(not(windows))]
+pub fn idle_seconds() -> Option<u32> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn interactive_desktop() -> bool {
+    true
+}
 
 /// На других системах буфер обмена не отслеживается.
 #[cfg(not(windows))]

@@ -9,13 +9,16 @@ and shows a clear summary. **Everything stays on your PC.** Nothing is sent over
 
 - **Day summary**: active time, what you spent it on (work, communication, social media, games…),
   main activities, rhythm of the day (breaks, program switches), daily goals, a week overview.
+- **Day timeline**: click a color-coded activity segment to see its windows, or a marker to jump to a bookmark.
+  Activity counting stops after 5 minutes of idle time by default, on Windows lock, or on recording pause.
+  Change the idle threshold in Settings.
 - **History**: every window of the day with a live filter, and a search across all days.
 - **Clipboard history**: text you copied, with the program it came from. Each text is stored once.
   Browse it with **Ctrl+Alt+↑ / ↓** from anywhere: a small popup appears at the bottom right and the
   selected item is put into the clipboard, so you just press Ctrl+V. Copies from password managers and
   password-like text are never recorded; any entry can be deleted, or the whole history cleared.
 - **"Remember this"**: bookmark the current moment with an optional note.
-- **PC health**: CPU and memory load, network traffic by hour, heaviest programs, disk, battery.
+- **System tab**: CPU and memory load, network traffic by hour, heaviest programs, disk, battery.
 - **Tray app**: closing the window keeps recording; with the window closed only one small process runs.
 - **Languages**: English and Russian, chosen automatically from Windows and switchable in the app.
   Adding a language takes one file, see [ui/i18n/README.md](ui/i18n/README.md).

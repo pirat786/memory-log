@@ -68,6 +68,8 @@ fn main() {
             commands::set_goal,
             commands::forget_minutes,
             commands::set_paused,
+            commands::get_idle_minutes,
+            commands::set_idle_minutes,
             commands::status,
             commands::clip_nav_state,
             commands::get_language,

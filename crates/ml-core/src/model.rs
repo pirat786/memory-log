@@ -11,6 +11,11 @@ pub struct Sample {
     pub title: String,
 }
 
+pub enum ActivityEvent {
+    Window(Sample),
+    Break(Timestamp),
+}
+
 /// Текст, скопированный в буфер обмена, и программа, из которой его скопировали.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClipEntry {

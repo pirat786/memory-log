@@ -25,11 +25,12 @@
     return s;
   }
 
-  // Подписывает всё, что в разметке помечено data-i18n, data-i18n-placeholder, data-i18n-title.
+  // Подписывает тексты и атрибуты, помеченные в разметке data-i18n.
   function applyStatic() {
     for (const e of document.querySelectorAll("[data-i18n]")) e.textContent = t(e.dataset.i18n);
     for (const e of document.querySelectorAll("[data-i18n-placeholder]")) e.placeholder = t(e.dataset.i18nPlaceholder);
     for (const e of document.querySelectorAll("[data-i18n-title]")) e.title = t(e.dataset.i18nTitle);
+    for (const e of document.querySelectorAll("[data-i18n-label]")) e.setAttribute("aria-label", t(e.dataset.i18nLabel));
     document.documentElement.lang = code;
   }
 
