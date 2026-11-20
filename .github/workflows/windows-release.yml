@@ -64,6 +64,11 @@ jobs:
             echo "Set MEMORY_LOG_GOOGLE_CLIENT_ID and MEMORY_LOG_GOOGLE_CLIENT_SECRET before building a public release." >&2
             exit 1
           fi
+          trimmed_id=$(echo "$MEMORY_LOG_GOOGLE_CLIENT_ID" | tr -d '[:space:]')
+          if [[ "$trimmed_id" != *.apps.googleusercontent.com || ${#trimmed_id} -gt 255 ]]; then
+            echo "MEMORY_LOG_GOOGLE_CLIENT_ID must end with .apps.googleusercontent.com." >&2
+            exit 1
+          fi
 
   windows:
     needs: check
@@ -105,6 +110,8 @@ jobs:
             throw 'Configure the production Desktop OAuth client before building a public release.'
           }
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY secret.' }
+          $env:MEMORY_LOG_GOOGLE_CLIENT_ID = $env:MEMORY_LOG_GOOGLE_CLIENT_ID.Trim()
+          $env:MEMORY_LOG_GOOGLE_CLIENT_SECRET = $env:MEMORY_LOG_GOOGLE_CLIENT_SECRET.Trim()
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
           tauri build --ci --features google-sync-release --config "$env:RUNNER_TEMP/tauri-release.json" '--' --locked
       - name: Publish release with updater manifest

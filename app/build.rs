@@ -15,7 +15,10 @@ fn main() {
             || env::var("MEMORY_LOG_GOOGLE_CLIENT_SECRET").is_ok_and(|value| !value.trim().is_empty()),
         "Set MEMORY_LOG_GOOGLE_CLIENT_SECRET from the Google Desktop OAuth client configuration to build with google-sync-release."
     );
-    let configured_id = env::var("MEMORY_LOG_GOOGLE_CLIENT_ID").ok().filter(|id| !id.is_empty());
+    let configured_id = env::var("MEMORY_LOG_GOOGLE_CLIENT_ID")
+        .ok()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let client_id = configured_id.as_deref()
         .or(cfg!(feature = "google-sync-release").then_some(RELEASE_GOOGLE_CLIENT_ID));
     if let Some(client_id) = client_id {
