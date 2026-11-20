@@ -7,3 +7,4 @@ node_modules
 
 # Готовая сборка для релиза
 /dist/
+/pass/
