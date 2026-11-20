@@ -44,6 +44,26 @@ jobs:
             echo "Release $tag does not exist yet, will build and publish."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Verify release configuration
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          MEMORY_LOG_GOOGLE_CLIENT_ID: ${{ vars.MEMORY_LOG_GOOGLE_CLIENT_ID }}
+          MEMORY_LOG_GOOGLE_CLIENT_SECRET: ${{ secrets.MEMORY_LOG_GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [[ -z "${TAURI_SIGNING_PUBLIC_KEY// }" ]]; then
+            echo "Set the TAURI_SIGNING_PUBLIC_KEY repository variable." >&2
+            exit 1
+          fi
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY// }" ]]; then
+            echo "Set the TAURI_SIGNING_PRIVATE_KEY repository secret." >&2
+            exit 1
+          fi
+          if [[ -z "${MEMORY_LOG_GOOGLE_CLIENT_ID// }" || -z "${MEMORY_LOG_GOOGLE_CLIENT_SECRET// }" ]]; then
+            echo "Set MEMORY_LOG_GOOGLE_CLIENT_ID and MEMORY_LOG_GOOGLE_CLIENT_SECRET before building a public release." >&2
+            exit 1
+          fi
 
   windows:
     needs: check
@@ -87,7 +107,7 @@ jobs:
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY secret.' }
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
           tauri build --ci --features google-sync-release --config "$env:RUNNER_TEMP/tauri-release.json" '--' --locked
-      - name: Create draft release with updater manifest
+      - name: Publish release with updater manifest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
