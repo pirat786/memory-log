@@ -86,7 +86,7 @@ jobs:
           }
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY secret.' }
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
-          tauri build --ci --features google-sync-release --config "$env:RUNNER_TEMP/tauri-release.json" -- --locked
+          tauri build --ci --features google-sync-release --config "$env:RUNNER_TEMP/tauri-release.json" '--' --locked
       - name: Create draft release with updater manifest
         env:
           GH_TOKEN: ${{ github.token }}
