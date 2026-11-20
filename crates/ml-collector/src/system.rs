@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use ml_core::{ProcSample, SystemSample};
+use serde::Serialize;
 use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
 
 /// Сколько программ с высокой нагрузкой по процессору и по памяти сохраняем за один снимок.
@@ -98,6 +99,138 @@ impl SystemCollector {
         all.into_iter()
             .filter(|p| keep.contains(&p.0))
             .map(|(name, cpu, mem)| ProcSample { ts, name, cpu_pct: cpu, mem_mb: (mem / (1024 * 1024)) as u32 })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiskInfo {
+    pub mount: String,
+    pub name: String,
+    pub total_gb: f32,
+    pub free_gb: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveProc {
+    pub name: String,
+    pub count: usize,
+    pub cpu_pct: f32,
+    pub mem_mb: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSystem {
+    pub os_name: String,
+    pub host_name: String,
+    pub cpu_brand: String,
+    pub cpu_cores: usize,
+    pub total_mem_mb: u32,
+    pub used_mem_mb: u32,
+    pub cpu_pct: f32,
+    pub uptime_s: u64,
+    pub disks: Vec<DiskInfo>,
+    pub processes: Vec<LiveProc>,
+}
+
+const PROTECTED_PROCESSES: &[&str] = &[
+    "System", "Registry", "smss", "csrss", "wininit", "services", "lsass", "svchost", "dwm", "memory-log",
+];
+
+pub struct LiveSystemProbe {
+    sys: System,
+    disks: Disks,
+}
+
+impl LiveSystemProbe {
+    pub fn new() -> Self {
+        let mut sys = System::new();
+        sys.refresh_cpu_all();
+        sys.refresh_memory();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        Self { sys, disks: Disks::new_with_refreshed_list() }
+    }
+
+    pub fn snapshot(&mut self) -> LiveSystem {
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_memory();
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.disks.refresh_list();
+        self.disks.refresh();
+
+        let cores = self.sys.cpus().len().max(1);
+        let mut agg: HashMap<String, (usize, f32, u64)> = HashMap::new();
+        for p in self.sys.processes().values() {
+            let name = p.name().to_string_lossy().trim_end_matches(".exe").to_string();
+            if name == "System Idle Process" {
+                continue;
+            }
+            let entry = agg.entry(name).or_insert((0, 0.0, 0));
+            entry.0 += 1;
+            entry.1 += p.cpu_usage() / cores as f32;
+            entry.2 += p.memory();
+        }
+        let mut processes: Vec<LiveProc> = agg.into_iter()
+            .map(|(name, (count, cpu_pct, mem))| LiveProc {
+                name,
+                count,
+                cpu_pct,
+                mem_mb: (mem / (1024 * 1024)) as u32,
+            })
+            .collect();
+        processes.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct).then_with(|| b.mem_mb.cmp(&a.mem_mb)));
+
+        let mut disks: Vec<DiskInfo> = self.disks.iter()
+            .filter(|d| d.total_space() > 0)
+            .map(|d| DiskInfo {
+                mount: d.mount_point().to_string_lossy().to_string(),
+                name: d.name().to_string_lossy().to_string(),
+                total_gb: d.total_space() as f32 / (1024.0 * 1024.0 * 1024.0),
+                free_gb: d.available_space() as f32 / (1024.0 * 1024.0 * 1024.0),
+            })
+            .collect();
+        disks.sort_by(|a, b| a.mount.cmp(&b.mount));
+
+        let cpu_brand = self.sys.cpus().first().map(|c| c.brand().trim().to_string()).unwrap_or_default();
+        LiveSystem {
+            os_name: System::long_os_version().unwrap_or_else(|| "Windows".into()),
+            host_name: System::host_name().unwrap_or_default(),
+            cpu_brand,
+            cpu_cores: cores,
+            total_mem_mb: (self.sys.total_memory() / (1024 * 1024)) as u32,
+            used_mem_mb: (self.sys.used_memory() / (1024 * 1024)) as u32,
+            cpu_pct: self.sys.global_cpu_usage(),
+            uptime_s: System::uptime(),
+            disks,
+            processes,
+        }
+    }
+
+    pub fn kill_process(&mut self, name: &str) -> Result<usize, String> {
+        if PROTECTED_PROCESSES.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+            return Err("system.protected_process".into());
+        }
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        let mut killed = 0;
+        for p in self.sys.processes().values() {
+            let proc_name = p.name().to_string_lossy();
+            let trimmed = proc_name.trim_end_matches(".exe");
+            if trimmed.eq_ignore_ascii_case(name) && p.kill() {
+                killed += 1;
+            }
+        }
+        if killed == 0 {
+            Err("system.process_not_found".into())
+        } else {
+            Ok(killed)
+        }
+    }
+
+    pub fn process_names(&mut self) -> HashMap<u32, String> {
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.sys.processes()
+            .iter()
+            .map(|(pid, proc_)| (pid.as_u32(), proc_.name().to_string_lossy().trim_end_matches(".exe").to_string()))
             .collect()
     }
 }

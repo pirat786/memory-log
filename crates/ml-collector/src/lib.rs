@@ -11,7 +11,7 @@ mod windows_clipboard;
 #[cfg(windows)]
 mod windows_power;
 
-pub use system::SystemCollector;
+pub use system::{DiskInfo, LiveProc, LiveSystem, LiveSystemProbe, SystemCollector};
 #[cfg(windows)]
 pub use windows_clipboard::{set_text as set_clipboard_text, ClipboardWatcher};
 #[cfg(windows)]

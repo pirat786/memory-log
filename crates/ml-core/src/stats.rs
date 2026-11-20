@@ -42,15 +42,36 @@ fn range(values: impl Iterator<Item = (Timestamp, f32)>) -> Option<Range> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HourLoad {
+    pub hour: u32,
+    pub cpu: f32,
+    pub mem: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LoadStats {
     pub cpu: Range,
     pub mem: Range,
+    pub by_hour: Vec<HourLoad>,
 }
 
 pub fn load_stats(samples: &[SystemSample]) -> Option<LoadStats> {
+    let mut sums = [(0.0f64, 0.0f64, 0u32); 24];
+    for s in samples {
+        let slot = &mut sums[hour_of(s.ts)];
+        slot.0 += s.cpu_pct as f64;
+        slot.1 += s.mem_pct as f64;
+        slot.2 += 1;
+    }
+    let by_hour = sums.into_iter().enumerate().map(|(hour, (cpu, mem, count))| HourLoad {
+        hour: hour as u32,
+        cpu: if count > 0 { (cpu / count as f64) as f32 } else { 0.0 },
+        mem: if count > 0 { (mem / count as f64) as f32 } else { 0.0 },
+    }).collect();
     Some(LoadStats {
         cpu: range(samples.iter().map(|s| (s.ts, s.cpu_pct)))?,
         mem: range(samples.iter().map(|s| (s.ts, s.mem_pct)))?,
+        by_hour,
     })
 }
 

@@ -7,6 +7,7 @@ mod commands;
 mod i18n;
 mod log;
 mod state;
+mod sys_tools;
 mod tray;
 #[cfg(windows)]
 mod updater;
@@ -75,6 +76,7 @@ fn main() {
             commands::week_overview,
             commands::week_comparison,
             commands::recorded_days,
+            commands::calendar_heatmap,
             commands::recording_settings,
             commands::set_recording_settings,
             commands::delete_days,
@@ -110,6 +112,13 @@ fn main() {
             commands::export_day_csv,
             commands::get_autostart,
             commands::set_autostart,
+            commands::live_system,
+            commands::kill_process,
+            commands::scan_junk,
+            commands::clean_junk,
+            commands::startup_items,
+            commands::set_startup_item,
+            commands::listening_ports,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось собрать Memory Log")

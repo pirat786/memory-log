@@ -33,6 +33,7 @@ windows = { workspace = true, features = [
     "Win32_Globalization",
     "Win32_Networking_WinHttp",
     "Win32_Security_Credentials",
+    "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

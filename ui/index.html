@@ -48,6 +48,10 @@
         <select id="deviceScope" class="device-scope" data-i18n-label="sync.filter" hidden></select>
       </div>
       <div id="errorBox" class="error" role="alert" hidden></div>
+      <div id="breakReminder" class="break-reminder" role="status" hidden>
+        <span id="breakReminderText"></span>
+        <button id="dismissBreak" class="small" type="button" data-i18n="break.dismiss"></button>
+      </div>
 
       <div id="dayView" class="view" aria-labelledby="pageTitle">
         <section id="allDevicesOverview" hidden aria-labelledby="allDevicesTitle">
@@ -59,6 +63,7 @@
           <div class="activity-total">
             <div class="big" id="total">—</div>
             <div class="muted" data-i18n="hero.caption"></div>
+            <div class="day-delta muted" id="dayDelta"></div>
           </div>
           <div class="muted" id="rhythm"></div>
           <div id="dayTrack" class="day-track" role="group" aria-labelledby="dayTrackTitle">
@@ -159,13 +164,18 @@
 
       <div id="systemView" class="view" aria-labelledby="pageTitle" hidden>
         <div class="system-grid">
+          <section class="wide" aria-labelledby="sysSpecsTitle">
+            <div class="card-heading">
+              <h2 id="sysSpecsTitle" data-i18n="system.specs"></h2>
+              <span id="sysLiveClock" class="muted small-text"></span>
+            </div>
+            <div id="sysSpecs" class="cards"></div>
+            <div id="sysDisks" class="bars sys-disks"></div>
+          </section>
           <section>
             <h2 data-i18n="sec.load"></h2>
             <div id="load" class="cards"></div>
-          </section>
-          <section>
-            <h2 data-i18n="sec.health"></h2>
-            <div id="health"></div>
+            <div id="loadHours" class="chart"></div>
           </section>
           <section class="wide">
             <h2 data-i18n="sec.net"></h2>
@@ -176,6 +186,54 @@
           <section class="wide">
             <h2 data-i18n="sec.procs"></h2>
             <div id="procs"></div>
+          </section>
+          <section class="wide" aria-labelledby="liveProcsTitle">
+            <div class="card-heading">
+              <h2 id="liveProcsTitle" data-i18n="system.live_procs"></h2>
+              <div class="live-proc-controls">
+                <input id="procSearch" type="search" autocomplete="off" data-i18n-label="system.proc_search">
+                <select id="procSort" data-i18n-label="system.proc_sort">
+                  <option value="cpu" data-i18n="system.sort_cpu"></option>
+                  <option value="mem" data-i18n="system.sort_mem"></option>
+                </select>
+                <button id="procRefresh" class="small" type="button" data-i18n="system.refresh"></button>
+              </div>
+            </div>
+            <div id="liveProcMsg" class="muted small-text"></div>
+            <div id="liveProcs" class="live-procs"></div>
+          </section>
+          <section>
+            <h2 data-i18n="sec.health"></h2>
+            <div id="health"></div>
+          </section>
+          <section class="wide" aria-labelledby="junkTitle">
+            <div class="card-heading">
+              <h2 id="junkTitle" data-i18n="system.junk_title"></h2>
+              <div class="live-proc-controls">
+                <button id="scanJunk" class="small" type="button" data-i18n="system.junk_scan"></button>
+                <button id="cleanJunk" class="small danger" type="button" data-i18n="system.junk_clean" hidden></button>
+              </div>
+            </div>
+            <div id="junkMsg" class="muted small-text"></div>
+            <div id="junkList"></div>
+          </section>
+          <section aria-labelledby="startupTitle">
+            <div class="card-heading">
+              <h2 id="startupTitle" data-i18n="system.startup_title"></h2>
+              <button id="refreshStartup" class="small" type="button" data-i18n="system.refresh"></button>
+            </div>
+            <div id="startupMsg" class="muted small-text"></div>
+            <div id="startupList" class="live-procs"></div>
+          </section>
+          <section aria-labelledby="portsTitle">
+            <div class="card-heading">
+              <h2 id="portsTitle" data-i18n="system.ports_title"></h2>
+              <div class="live-proc-controls">
+                <input id="portSearch" type="search" autocomplete="off" data-i18n-label="system.port_search">
+                <button id="refreshPorts" class="small" type="button" data-i18n="system.refresh"></button>
+              </div>
+            </div>
+            <div id="portsList" class="live-procs"></div>
           </section>
         </div>
       </div>
@@ -200,6 +258,15 @@
             <span data-i18n="tools.autostart"></span>
             <input id="autostart" type="checkbox">
           </label>
+          <div class="setting-row">
+            <label for="breakMinutes" data-i18n="break.label"></label>
+            <select id="breakMinutes">
+              <option value="0" data-i18n="break.off"></option>
+              <option value="45" data-i18n="break.45"></option>
+              <option value="60" data-i18n="break.60"></option>
+              <option value="90" data-i18n="break.90"></option>
+            </select>
+          </div>
         </section>
         <section class="settings-card" aria-labelledby="recordingTitle">
           <h2 id="recordingTitle" data-i18n="settings.recording"></h2>

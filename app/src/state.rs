@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use chrono::{Datelike, Days, Local, NaiveDate, TimeZone, Utc};
+use ml_collector::LiveSystemProbe;
 use ml_core::categorize::apply_overrides;
 use ml_core::model::{CategoryOverride, OverrideScope, RecordingSettings, Session};
 use ml_core::privacy::HIDDEN_APP;
@@ -58,6 +59,7 @@ pub struct AppState {
     language: Mutex<String>,
     /// Пункты меню трея: при смене языка их подписи обновляются.
     pub tray_items: Mutex<Vec<(&'static str, tauri::menu::MenuItem<tauri::Wry>)>>,
+    pub live_system: Mutex<Option<LiveSystemProbe>>,
 }
 
 fn parse_date(date: Option<&str>, lang: &str) -> Result<NaiveDate, String> {
@@ -134,6 +136,7 @@ impl AppState {
             db_path: db_path.to_path_buf(),
             language: Mutex::new(initial_language(db_path)),
             tray_items: Mutex::new(Vec::new()),
+            live_system: Mutex::new(None),
         })
     }
 
@@ -348,6 +351,48 @@ impl AppState {
             };
             if has_records.map_err(|e| e.to_string())? {
                 days.push(date.to_string());
+            }
+            date = date.checked_add_days(Days::new(1)).ok_or_else(|| "invalid calendar date".to_string())?;
+        }
+        Ok(days)
+    }
+
+    pub fn calendar_heatmap(&self, month: &str, device: Option<&str>) -> Result<Vec<WeekDay>, String> {
+        let mut date = parse_date(Some(month), &self.lang())?;
+        let month = date.month();
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let mut days = Vec::new();
+        while date.month() == month && date <= time::today() {
+            let (from, to) = time::day_bounds(date);
+            let active_secs = match device {
+                None => {
+                    if st.has_records(from, to).map_err(|e| e.to_string())? {
+                        let sessions = self.sessions_for_day(&st, date).map_err(|e| e.to_string())?;
+                        summary::week_day(&date.to_string(), &sessions).active_secs
+                    } else {
+                        0
+                    }
+                }
+                Some(scope) => {
+                    let mut total = if scope == "all" && st.has_records(from, to).map_err(|e| e.to_string())? {
+                        let sessions = self.sessions_for_day(&st, date).map_err(|e| e.to_string())?;
+                        summary::week_day(&date.to_string(), &sessions).active_secs
+                    } else {
+                        0
+                    };
+                    let filter = (scope != "all").then_some(scope);
+                    for peer in st.sync_peers().map_err(|e| e.to_string())? {
+                        if filter.is_some_and(|id| id != peer.id) { continue; }
+                        let events = st.peer_activity(&peer.id, from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
+                            .map_err(|e| e.to_string())?;
+                        let (sessions, _) = sessions::sessionize_with_away(&events, &self.categorizer, (from, to));
+                        total += summary::week_day(&date.to_string(), &sessions).active_secs;
+                    }
+                    total
+                }
+            };
+            if active_secs > 0 {
+                days.push(WeekDay { date: date.to_string(), active_secs, top_category: None });
             }
             date = date.checked_add_days(Days::new(1)).ok_or_else(|| "invalid calendar date".to_string())?;
         }

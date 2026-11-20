@@ -2270,6 +2270,7 @@ version = "0.3.0"
 dependencies = [
  "chrono",
  "ml-core",
+ "serde",
  "sysinfo",
  "windows 0.58.0",
 ]

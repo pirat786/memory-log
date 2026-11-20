@@ -1,5 +1,6 @@
 use std::sync::{atomic::Ordering, Arc};
 
+use ml_collector::LiveSystem;
 use ml_core::{DaySummary, SearchHit, WeekDay};
 use ml_core::model::{CategoryOverride, RecordingSettings};
 use tauri::{AppHandle, Manager, State};
@@ -7,6 +8,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::state::{AppState, Status};
 use crate::cloud::{self, SyncStatus};
+use crate::sys_tools::{CleanResult, JunkCategory, ListeningPort, StartupItem};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -34,6 +36,13 @@ pub async fn week_comparison(state: Shared<'_>, work_hours: Option<[u32; 2]>) ->
 #[tauri::command]
 pub fn recorded_days(state: Shared, month: String, device: Option<String>) -> Result<Vec<String>, String> {
     state.recorded_days(&month, device.as_deref())
+}
+
+#[tauri::command]
+pub async fn calendar_heatmap(state: Shared<'_>, month: String, device: Option<String>) -> Result<Vec<WeekDay>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.calendar_heatmap(&month, device.as_deref()))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -190,4 +199,71 @@ pub fn get_autostart(app: AppHandle) -> bool {
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     let launcher = app.autolaunch();
     if enabled { launcher.enable() } else { launcher.disable() }.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn live_system(state: Shared<'_>) -> Result<LiveSystem, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = state.live_system.lock().map_err(|e| e.to_string())?;
+        let first = guard.is_none();
+        let probe = guard.get_or_insert_with(ml_collector::LiveSystemProbe::new);
+        if first {
+            std::thread::sleep(std::time::Duration::from_millis(180));
+        }
+        Ok(probe.snapshot())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn kill_process(state: Shared<'_>, name: String) -> Result<usize, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = state.live_system.lock().map_err(|e| e.to_string())?;
+        let probe = guard.get_or_insert_with(ml_collector::LiveSystemProbe::new);
+        probe.kill_process(&name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn scan_junk() -> Result<Vec<JunkCategory>, String> {
+    tauri::async_runtime::spawn_blocking(crate::sys_tools::scan_junk)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clean_junk(ids: Vec<String>) -> Result<CleanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sys_tools::clean_junk(&ids))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn startup_items() -> Result<Vec<StartupItem>, String> {
+    tauri::async_runtime::spawn_blocking(crate::sys_tools::startup_items)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn set_startup_item(id: String, enabled: bool) -> Result<(), String> {
+    crate::sys_tools::set_startup_item(&id, enabled)
+}
+
+#[tauri::command]
+pub async fn listening_ports(state: Shared<'_>) -> Result<Vec<ListeningPort>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = state.live_system.lock().map_err(|e| e.to_string())?;
+        let probe = guard.get_or_insert_with(ml_collector::LiveSystemProbe::new);
+        let names = probe.process_names();
+        crate::sys_tools::listening_ports(&names)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

@@ -49,8 +49,19 @@ function bars(target, rows) {
   if (!rows.length) return target.append(note(t("common.nodata")));
   const max = Math.max(...rows.map((r) => r.secs), 1);
   for (const r of rows) {
-    const row = el("div", "bar");
+    const row = el("div", r.onClick ? "bar bar-link" : "bar");
     if (r.category) row.dataset.category = r.category;
+    if (r.onClick) {
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.onclick = r.onClick;
+      row.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          r.onClick();
+        }
+      };
+    }
     const track = el("div", "track");
     const fill = el("div", r.over ? "fill over" : "fill");
     fill.style.width = `${(r.secs / max) * 100}%`;
@@ -58,6 +69,13 @@ function bars(target, rows) {
     row.append(el("div", "", r.label), track, el("div", "muted", r.value ?? duration(r.secs)));
     target.append(row);
   }
+}
+
+function openHistoryQuery(query) {
+  $("q").value = query;
+  setView("history");
+  setTab("windows");
+  renderHistory();
 }
 
 function list(target, rows, emptyText) {
@@ -97,6 +115,191 @@ function renderLoad(load) {
     [t("load.cpu"), t("load.avg", { v: pct(load.cpu.avg) }), loadRange(load.cpu)],
     [t("load.mem"), t("load.avg", { v: pct(load.mem.avg) }), loadRange(load.mem)],
   ] : [], t("load.empty"));
+
+  const chart = $("loadHours");
+  chart.replaceChildren();
+  if (!load?.by_hour) return;
+  const max = Math.max(...load.by_hour.map((h) => h.cpu), 1);
+  for (const h of load.by_hour) {
+    const col = el("div", "col");
+    col.style.height = `${(h.cpu / max) * 100}%`;
+    col.title = `${String(h.hour).padStart(2, "0")}:00 — CPU ${pct(h.cpu)}, RAM ${pct(h.mem)}`;
+    chart.append(col);
+  }
+}
+
+let liveSystemData = null;
+
+function renderLiveProcList() {
+  const target = $("liveProcs");
+  if (!liveSystemData) return target.replaceChildren();
+  const query = $("procSearch").value.trim().toLowerCase();
+  const sortBy = $("procSort").value;
+  let listRows = liveSystemData.processes.filter((p) => !query || p.name.toLowerCase().includes(query));
+  if (sortBy === "mem") {
+    listRows = [...listRows].sort((a, b) => b.mem_mb - a.mem_mb || b.cpu_pct - a.cpu_pct);
+  }
+  const items = listRows.slice(0, 60).map((p) => {
+    const row = el("div", "item live-proc");
+    const name = p.count > 1 ? `${p.name} ×${p.count}` : p.name;
+    const stats = `${pct(p.cpu_pct)} · ${p.mem_mb} ${t("unit.mb")}`;
+    const kill = el("button", "small danger", t("system.kill"));
+    kill.type = "button";
+    kill.onclick = async () => {
+      if (!window.confirm(t("system.confirm_kill", { name: p.name, count: p.count }))) return;
+      try {
+        const count = await invoke("kill_process", { name: p.name });
+        $("liveProcMsg").textContent = t("system.killed", { name: p.name, count });
+        await guarded(refreshLiveSystem);
+      } catch (err) {
+        const key = String(err);
+        $("liveProcMsg").textContent = key.startsWith("system.") ? t(key) : key;
+      }
+    };
+    row.append(el("strong", "live-proc-name", name), el("span", "muted live-proc-stats", stats), kill);
+    return row;
+  });
+  target.replaceChildren(...(items.length ? items : [note(t("common.nodata"))]));
+}
+
+async function refreshLiveSystem() {
+  if (activeView !== "system" || document.hidden) return;
+  const data = await invoke("live_system");
+  liveSystemData = data;
+  $("sysLiveClock").textContent = `${data.os_name} · ${data.host_name}`;
+  cards($("sysSpecs"), [
+    [t("system.cpu_live"), pct(data.cpu_pct), `${data.cpu_brand} (${data.cpu_cores})`],
+    [t("system.ram_live"), `${(data.used_mem_mb / 1024).toFixed(1)} / ${(data.total_mem_mb / 1024).toFixed(1)} ${t("unit.gb")}`,
+      pct((data.used_mem_mb / Math.max(data.total_mem_mb, 1)) * 100)],
+    [t("system.uptime_live"), duration(data.uptime_s), data.host_name],
+  ], t("common.nodata"));
+
+  bars($("sysDisks"), data.disks.map((d) => {
+    const used = Math.max(0, d.total_gb - d.free_gb);
+    const label = d.name ? `${d.mount} (${d.name})` : d.mount;
+    return {
+      label,
+      secs: used,
+      over: d.free_gb / Math.max(d.total_gb, 1) < 0.1,
+      value: t("system.disk_val", { free: d.free_gb.toFixed(1), total: d.total_gb.toFixed(0), gb: t("unit.gb") }),
+    };
+  }));
+  renderLiveProcList();
+}
+
+let junkCategories = [];
+let portsData = [];
+
+function renderJunkList() {
+  const target = $("junkList");
+  if (!junkCategories.length) {
+    $("cleanJunk").hidden = true;
+    return target.replaceChildren(note(t("system.junk_hint")));
+  }
+  const rows = junkCategories.map((cat) => {
+    const row = el("label", "item junk-row");
+    const check = el("input");
+    check.type = "checkbox";
+    check.value = cat.id;
+    check.checked = cat.bytes > 0;
+    check.disabled = cat.bytes === 0;
+    const text = el("div");
+    text.append(
+      el("strong", "", t(`system.junk_${cat.id}`)),
+      el("div", "muted small-text", t("system.junk_meta", { size: bytes(cat.bytes), files: cat.files })),
+    );
+    row.append(check, text);
+    return row;
+  });
+  target.replaceChildren(...rows);
+  $("cleanJunk").hidden = !junkCategories.some((c) => c.bytes > 0);
+}
+
+async function runJunkScan() {
+  $("scanJunk").disabled = true;
+  $("junkMsg").textContent = t("system.junk_scanning");
+  try {
+    junkCategories = await invoke("scan_junk");
+    const total = junkCategories.reduce((sum, c) => sum + c.bytes, 0);
+    $("junkMsg").textContent = t("system.junk_found", { size: bytes(total) });
+    renderJunkList();
+  } finally {
+    $("scanJunk").disabled = false;
+  }
+}
+
+async function runJunkClean() {
+  const ids = [...$("junkList").querySelectorAll("input:checked")].map((i) => i.value);
+  if (!ids.length) return;
+  if (!window.confirm(t("system.junk_confirm"))) return;
+  $("cleanJunk").disabled = true;
+  $("scanJunk").disabled = true;
+  try {
+    const res = await invoke("clean_junk", { ids });
+    $("junkMsg").textContent = t("system.junk_done", {
+      size: bytes(res.freed_bytes),
+      deleted: res.deleted_files,
+      skipped: res.skipped_files,
+    });
+    junkCategories = await invoke("scan_junk");
+    renderJunkList();
+  } finally {
+    $("cleanJunk").disabled = false;
+    $("scanJunk").disabled = false;
+  }
+}
+
+async function refreshStartup() {
+  const items = await invoke("startup_items");
+  const target = $("startupList");
+  if (!items.length) return target.replaceChildren(note(t("common.nodata")));
+  target.replaceChildren(...items.map((item) => {
+    const row = el("label", "item startup-row");
+    const info = el("div");
+    const title = el("strong", "", item.name);
+    title.append(el("span", "startup-badge", item.source));
+    info.append(title, el("div", "muted small-text startup-cmd", item.command));
+    const toggle = el("input");
+    toggle.type = "checkbox";
+    toggle.checked = item.enabled;
+    toggle.onchange = async () => {
+      toggle.disabled = true;
+      try {
+        await invoke("set_startup_item", { id: item.id, enabled: toggle.checked });
+        $("startupMsg").textContent = t(toggle.checked ? "system.startup_on" : "system.startup_off", { name: item.name });
+      } catch (err) {
+        toggle.checked = !toggle.checked;
+        const key = String(err);
+        $("startupMsg").textContent = key.startsWith("system.") ? t(key) : key;
+      } finally {
+        toggle.disabled = false;
+      }
+    };
+    row.append(info, toggle);
+    return row;
+  }));
+}
+
+function renderPortsList() {
+  const target = $("portsList");
+  const query = $("portSearch").value.trim().toLowerCase();
+  const rows = portsData.filter((p) =>
+    !query || p.process.toLowerCase().includes(query) || String(p.port).includes(query) || p.proto.toLowerCase().includes(query));
+  if (!rows.length) return target.replaceChildren(note(t("common.nodata")));
+  target.replaceChildren(...rows.slice(0, 100).map((p) => {
+    const row = el("div", "item port-row");
+    row.append(
+      el("code", "port-badge", `${p.proto}:${p.port}`),
+      el("strong", "live-proc-name", p.process),
+      el("span", "muted small-text", `${p.address} · PID ${p.pid}`),
+    );
+    return row;
+  }));
+}
+
+async function refreshPorts() {
+  portsData = await invoke("listening_ports");
+  renderPortsList();
 }
 
 function renderNet(net) {
@@ -172,6 +375,12 @@ function setView(view) {
   $("dateNav").hidden = view === "settings";
   if (syncInfo) updateDeviceControls();
   if (previousScope !== currentDeviceScope()) guarded(render);
+  if (view === "system") {
+    guarded(refreshLiveSystem);
+    if (!$("startupList").childElementCount) guarded(refreshStartup);
+    if (!portsData.length) guarded(refreshPorts);
+    if (!junkCategories.length) renderJunkList();
+  }
 }
 
 function selectRange(range) {
@@ -567,8 +776,49 @@ function setTab(name) {
   renderHistory();
 }
 
+let weekAvgSecs = 0;
+let lastDaySummary = null;
+let breakDismissedAt = 0;
+
+function updateDayDelta(activeSecs, scope) {
+  const target = $("dayDelta");
+  if (!weekAvgSecs || !activeSecs || scope !== "local") {
+    target.textContent = "";
+    return;
+  }
+  const diff = Math.round((activeSecs - weekAvgSecs) / 60);
+  if (Math.abs(diff) < 5) {
+    target.textContent = t("hero.delta_even");
+  } else {
+    target.textContent = t(diff > 0 ? "hero.delta_up" : "hero.delta_down", { v: duration(Math.abs(diff) * 60) });
+  }
+}
+
+function updateBreakReminder(summary, isToday, scope) {
+  const box = $("breakReminder");
+  const limitMins = Number(localStorage.getItem("breakMinutes") || "0");
+  if (!limitMins || !isToday || scope !== "local" || !summary?.rhythm) {
+    box.hidden = true;
+    return;
+  }
+  const lastBreakEnd = summary.rhythm.breaks.length
+    ? summary.rhythm.breaks[summary.rhythm.breaks.length - 1].end
+    : summary.rhythm.first_ts;
+  const streakSecs = summary.rhythm.last_ts - lastBreakEnd;
+  const now = Math.floor(Date.now() / 1000);
+  if (streakSecs >= limitMins * 60 && now - breakDismissedAt >= limitMins * 60 && now - summary.rhythm.last_ts < 120) {
+    $("breakReminderText").textContent = t("break.prompt", { v: shortDuration(streakSecs) });
+    box.hidden = false;
+  } else {
+    box.hidden = true;
+  }
+}
+
 async function renderWeek() {
   const days = await invoke("week_overview");
+  const recorded = days.filter((d) => d.active_secs > 0);
+  weekAvgSecs = recorded.length ? Math.round(recorded.reduce((sum, d) => sum + d.active_secs, 0) / recorded.length) : 0;
+  if (lastDaySummary) updateDayDelta(lastDaySummary.active_secs, currentDeviceScope());
   const target = $("week");
   const peak = Math.max(...days.map((d) => d.active_secs), 1);
   const chart = el("div", "week-chart");
@@ -618,8 +868,11 @@ async function render() {
   }
   renderedDate = date;
   renderedDeviceScope = scope;
+  lastDaySummary = s;
   $("total").textContent = s.active_secs ? shortDuration(s.active_secs) : duration(0);
   $("rhythm").textContent = renderRhythm(s.rhythm, s.away_secs);
+  updateDayDelta(s.active_secs, scope);
+  updateBreakReminder(s, isToday, scope);
 
   timelineData = s.timeline;
   historyBlocks = s.history_blocks;
@@ -629,8 +882,12 @@ async function render() {
   renderHistory();
 
   bars($("categories"), s.by_category.map((c) => ({ category: c.category, label: categoryName(c.category), secs: c.secs })));
-  bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs })));
-  bars($("sites"), s.sites.map((x) => ({ label: x.site || t("sites.other"), secs: x.secs })));
+  bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs, onClick: () => openHistoryQuery(appName(a.app)) })));
+  bars($("sites"), s.sites.map((x) => ({
+    label: x.site || t("sites.other"),
+    secs: x.secs,
+    onClick: x.site ? () => openHistoryQuery(x.site) : null,
+  })));
   bars($("goals"), s.goals.map((g) => ({
     label: categoryName(g.category),
     secs: Math.min(g.used_mins, g.limit_mins) * 60,
@@ -894,6 +1151,28 @@ async function start() {
   fillLanguageControls();
   initExtraControls();
   initSyncControls();
+  const breakSelect = $("breakMinutes");
+  breakSelect.value = localStorage.getItem("breakMinutes") || "0";
+  breakSelect.onchange = () => {
+    localStorage.setItem("breakMinutes", breakSelect.value);
+    breakDismissedAt = 0;
+    if (lastDaySummary) updateBreakReminder(lastDaySummary, iso(current) === iso(new Date()), currentDeviceScope());
+  };
+  $("dismissBreak").onclick = () => {
+    breakDismissedAt = Math.floor(Date.now() / 1000);
+    $("breakReminder").hidden = true;
+  };
+  $("procSearch").oninput = renderLiveProcList;
+  $("procSort").onchange = renderLiveProcList;
+  $("procRefresh").onclick = () => guarded(refreshLiveSystem);
+  $("scanJunk").onclick = () => guarded(runJunkScan);
+  $("cleanJunk").onclick = () => guarded(runJunkClean);
+  $("refreshStartup").onclick = () => guarded(refreshStartup);
+  $("refreshPorts").onclick = () => guarded(refreshPorts);
+  $("portSearch").oninput = renderPortsList;
+  setInterval(() => {
+    if (activeView === "system" && !document.hidden) guarded(refreshLiveSystem);
+  }, 3000);
   void initAppUpdates();
   setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });

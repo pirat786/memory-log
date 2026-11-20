@@ -21,7 +21,8 @@ async function renderCalendar() {
   $("calendarNext").disabled = iso(month).slice(0, 7) === iso(today).slice(0, 7);
   days.replaceChildren();
   const scope = currentDeviceScope();
-  const recorded = new Set(await invoke("recorded_days", { month: iso(month), device: scope === "local" ? null : scope }));
+  const heatmap = new Map((await invoke("calendar_heatmap", { month: iso(month), device: scope === "local" ? null : scope }))
+    .map((d) => [d.date, d.active_secs]));
   if (request !== calendarRequest || !$("calendarDlg").open) return;
 
   for (let day = 1; day <= 7; day++) {
@@ -40,8 +41,15 @@ async function renderCalendar() {
     button.setAttribute("aria-pressed", key === iso(current));
     if (key === iso(today)) button.setAttribute("aria-current", "date");
     const label = date.toLocaleDateString(I18N.locale, { dateStyle: "full" });
-    button.setAttribute("aria-label", recorded.has(key) ? t("calendar.recorded", { date: label }) : label);
-    if (recorded.has(key)) button.dataset.recorded = "";
+    const secs = heatmap.get(key) ?? 0;
+    if (secs > 0) {
+      button.dataset.recorded = "";
+      button.dataset.heat = secs >= 8 * 3600 ? "4" : secs >= 5 * 3600 ? "3" : secs >= 2 * 3600 ? "2" : "1";
+      button.title = `${label} · ${shortDuration(secs)}`;
+      button.setAttribute("aria-label", `${t("calendar.recorded", { date: label })} · ${shortDuration(secs)}`);
+    } else {
+      button.setAttribute("aria-label", label);
+    }
     button.onclick = () => {
       $("calendarDlg").close();
       if (activeView === "history" && tab === "all") {
