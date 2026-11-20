@@ -3,6 +3,8 @@
 use std::path::Path;
 
 use ml_core::privacy::HIDDEN_APP;
+use ml_core::model::{CategoryOverride, OverrideScope, RecordingSettings};
+use ml_core::sessions::LEGACY_IDLE_SECS;
 use ml_core::{ActivityEvent, Bookmark, Category, ClipEntry, Goal, ProcSample, Sample, SearchHit, SystemSample, Timestamp};
 use rusqlite::{params, Connection};
 
@@ -19,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/008_activity.sql"),
     // База 0.2.0 могла получить версию 8 без столбца idle_secs.
     ADD_IDLE_SECONDS,
+    include_str!("../migrations/010_preferences.sql"),
 ];
 const ADD_IDLE_SECONDS: &str = include_str!("../migrations/007_idle_secs.sql");
 const ACTIVITY_SCHEMA_VERSION: usize = 8;
@@ -188,6 +191,69 @@ impl Storage {
         Ok(())
     }
 
+    pub fn recording_settings(&self) -> Result<RecordingSettings> {
+        Ok(self.conn.query_row(
+            "SELECT clipboard_enabled, retention_days, excluded_apps FROM activity_settings WHERE id = 1",
+            [],
+            |r| Ok(RecordingSettings { clipboard_enabled: r.get(0)?, retention_days: r.get(1)?, excluded_apps: r.get(2)? }),
+        )?)
+    }
+
+    pub fn set_recording_settings(&self, settings: &RecordingSettings) -> Result<()> {
+        self.conn.execute(
+            "UPDATE activity_settings SET clipboard_enabled = ?1, retention_days = ?2, excluded_apps = ?3 WHERE id = 1",
+            params![settings.clipboard_enabled, settings.retention_days, settings.excluded_apps],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_category_override(&self, change: &CategoryOverride) -> Result<()> {
+        let ts = if change.scope == OverrideScope::Visit { change.ts } else { 0 };
+        let title = if change.scope == OverrideScope::App { "" } else { &change.title };
+        if let Some(category) = change.category {
+            self.conn.execute(
+                "INSERT INTO category_overrides (scope, ts, app, title, category) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (scope, ts, app, title) DO UPDATE SET category = excluded.category",
+                params![change.scope.as_str(), ts, change.app, title, category.as_str()],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM category_overrides WHERE scope = ?1 AND ts = ?2 AND app = ?3 AND title = ?4",
+                params![change.scope.as_str(), ts, change.app, title],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn category_overrides(&self, from: Timestamp, to: Timestamp) -> Result<Vec<CategoryOverride>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT scope, ts, app, title, category FROM category_overrides
+             WHERE scope != 'visit' OR (ts >= ?1 AND ts < ?2) ORDER BY scope, app, title",
+        )?;
+        let rows = stmt.query_map(params![from, to], |r| {
+            let scope = match r.get::<_, String>(0)?.as_str() {
+                "visit" => OverrideScope::Visit,
+                "window" => OverrideScope::Window,
+                _ => OverrideScope::App,
+            };
+            Ok(CategoryOverride {
+                scope, ts: r.get(1)?, app: r.get(2)?, title: r.get(3)?,
+                category: Category::parse(&r.get::<_, String>(4)?),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn has_records(&self, from: Timestamp, to: Timestamp) -> Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM samples WHERE ts >= ?1 AND ts < ?2 AND is_break != 1)
+                 OR EXISTS(SELECT 1 FROM bookmarks WHERE ts >= ?1 AND ts < ?2)
+                 OR EXISTS(SELECT 1 FROM clipboard WHERE ts >= ?1 AND ts < ?2)
+                 OR EXISTS(SELECT 1 FROM system_samples WHERE ts >= ?1 AND ts < ?2)",
+        )?;
+        Ok(stmt.query_row(params![from, to], |r| r.get(0))?)
+    }
+
     pub fn last_sample(&self) -> Result<Option<Sample>> {
         let mut stmt = self.conn.prepare(
             "SELECT ts, app, title, idle_secs FROM samples WHERE is_break = 0 ORDER BY ts DESC, rowid DESC LIMIT 1",
@@ -337,10 +403,10 @@ impl Storage {
             return Ok(vec![]);
         }
         let mut stmt = self.conn.prepare(
-            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples WHERE is_break = 0
+            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples WHERE is_break = 0 AND idle_secs < ?1
              GROUP BY app, title ORDER BY MAX(ts) DESC",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([LEGACY_IDLE_SECS], |r| {
             Ok(SearchHit { app: r.get(0)?, title: r.get(1)?, first_ts: r.get(2)?, last_ts: r.get(3)?, count: r.get(4)? })
         })?;
         let mut out = Vec::new();
@@ -361,9 +427,12 @@ impl Storage {
 
     /// Удаляет всё записанное за период («забыть последние N минут»).
     pub fn delete_between(&self, from: Timestamp, to: Timestamp) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
         for table in ["samples", "bookmarks", "system_samples", "proc_samples", "clipboard"] {
-            self.conn.execute(&format!("DELETE FROM {table} WHERE ts >= ?1 AND ts < ?2"), params![from, to])?;
+            tx.execute(&format!("DELETE FROM {table} WHERE ts >= ?1 AND ts < ?2"), params![from, to])?;
         }
+        tx.execute("DELETE FROM category_overrides WHERE scope = 'visit' AND ts >= ?1 AND ts < ?2", params![from, to])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -398,6 +467,34 @@ mod tests {
         assert_eq!(st.last_sample().unwrap(), Some(s));
         st.delete_between(0, 200).unwrap();
         assert!(st.activity_between(0, 200).unwrap().is_empty());
+    }
+
+    #[test]
+    fn recording_settings_and_period_deletion_preserve_rules_and_outside_records() {
+        let storage = Storage::open_in_memory().unwrap();
+        let settings = RecordingSettings {
+            clipboard_enabled: false, retention_days: 30, excluded_apps: "notepad\nchrome".into(),
+        };
+        storage.set_recording_settings(&settings).unwrap();
+        let saved = storage.recording_settings().unwrap();
+        assert!(!saved.clipboard_enabled);
+        assert_eq!(saved.retention_days, 30);
+        assert!(saved.excludes("Notepad.EXE"));
+        storage.insert_sample(&sample(10, "editor", "Document")).unwrap();
+        storage.insert_sample(&sample(20, "editor", "Document")).unwrap();
+        let mut rule = CategoryOverride {
+            scope: OverrideScope::Visit, ts: 10, app: "editor".into(), title: "Document".into(), category: Some(Category::Work),
+        };
+        storage.set_category_override(&rule).unwrap();
+        rule.scope = OverrideScope::Window;
+        storage.set_category_override(&rule).unwrap();
+        assert!(storage.has_records(10, 20).unwrap());
+        storage.delete_between(10, 20).unwrap();
+        assert!(!storage.has_records(10, 20).unwrap());
+        assert!(storage.has_records(20, 21).unwrap());
+        let overrides = storage.category_overrides(0, 30).unwrap();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].scope, OverrideScope::Window);
     }
 
     #[test]
@@ -450,7 +547,7 @@ mod tests {
             ));
             assert_eq!(
                 storage.conn.pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0)).unwrap(),
-                IDLE_COMPAT_SCHEMA_VERSION,
+                MIGRATIONS.len(),
             );
         }
     }

@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Memory Log</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -31,13 +32,14 @@
         <h1 id="pageTitle" tabindex="-1" data-i18n="view.day"></h1>
         <div class="actions">
           <span id="status" class="status" role="status"></span>
+          <button id="themeToggle" type="button" data-i18n="theme.toggle"></button>
           <button id="pause" data-i18n="btn.pause"></button>
           <button id="mark" class="primary" data-i18n="btn.mark"></button>
         </div>
       </header>
       <div id="dateNav" class="date-nav">
         <button id="prev" type="button" data-i18n-label="nav.prev">‹</button>
-        <span id="date" data-i18n="nav.today"></span>
+        <button id="date" class="date-picker" type="button" aria-haspopup="dialog" data-i18n-title="calendar.title" data-i18n="nav.today"></button>
         <button id="next" type="button" data-i18n-label="nav.next">›</button>
       </div>
       <div id="errorBox" class="error" role="alert" hidden></div>
@@ -56,6 +58,10 @@
           </div>
           <div id="trackHours" class="track-hours" aria-hidden="true"></div>
           <div id="trackLegend" class="track-legend"></div>
+          <div id="trackSelection" class="range-filter track-selection" hidden>
+            <span id="trackSelectionLabel"></span>
+            <button id="openTrackWindow" type="button" data-i18n="search.open_window"></button>
+          </div>
         </section>
 
         <div class="overview-grid">
@@ -64,7 +70,10 @@
             <div id="categories" class="bars"></div>
           </section>
           <section>
-            <h2 data-i18n="sec.week"></h2>
+            <div class="card-heading">
+              <h2 data-i18n="sec.week"></h2>
+              <button id="openComparison" class="small" type="button" data-i18n="compare.open"></button>
+            </div>
             <div id="week"></div>
           </section>
           <section>
@@ -88,6 +97,19 @@
             <div id="goals"></div>
           </section>
         </div>
+        <section>
+          <h2 id="comparisonTitle" tabindex="-1" data-i18n="compare.title"></h2>
+          <form id="workHours" class="setting-row compare-hours">
+            <label><input id="workOnly" type="checkbox"> <span data-i18n="compare.work_only"></span></label>
+            <div id="workTimes" class="setting-actions" hidden>
+              <input id="workStart" type="time" value="09:00" data-i18n-label="compare.work_start" required>
+              <input id="workEnd" type="time" value="18:00" data-i18n-label="compare.work_end" required>
+              <button type="submit" data-i18n="common.save"></button>
+            </div>
+          </form>
+          <p class="muted small-text" data-i18n="compare.note"></p>
+          <div id="comparison"></div>
+        </section>
       </div>
 
       <div id="historyView" class="view" aria-labelledby="pageTitle" hidden>
@@ -108,7 +130,13 @@
               <span id="rangeLabel"></span>
               <button id="clearRange" type="button" data-i18n="track.clear"></button>
             </div>
-            <input id="q" type="search" autocomplete="off" data-i18n-label="hist.search">
+            <div class="history-controls">
+              <input id="q" type="search" autocomplete="off" data-i18n-label="hist.search">
+              <select id="windowOrder" data-i18n-label="hist.view" hidden>
+                <option value="grouped" data-i18n="hist.view.grouped"></option>
+                <option value="time" data-i18n="hist.view.time"></option>
+              </select>
+            </div>
             <div class="note-row">
               <div id="tabNote" class="muted small-text"></div>
               <button id="clearClips" class="small" data-i18n="hist.clear" hidden></button>
@@ -151,6 +179,14 @@
             <label for="lang" data-i18n="lang.label"></label>
             <select id="lang"></select>
           </div>
+          <div class="setting-row">
+            <label for="themeMode" data-i18n="theme.toggle"></label>
+            <select id="themeMode">
+              <option value="system" data-i18n="theme.system"></option>
+              <option value="light" data-i18n="theme.light"></option>
+              <option value="dark" data-i18n="theme.dark"></option>
+            </select>
+          </div>
           <label class="setting-row">
             <span data-i18n="tools.autostart"></span>
             <input id="autostart" type="checkbox">
@@ -165,14 +201,74 @@
               <button id="saveIdle" type="submit" disabled data-i18n="common.save"></button>
             </div>
           </form>
+          <form id="recordingSettings">
+            <fieldset id="recordingFields" disabled>
+              <label class="setting-row">
+                <span data-i18n="record.clipboard"></span>
+                <input id="recordClipboard" type="checkbox">
+              </label>
+              <div class="setting-row">
+                <label for="retentionDays" data-i18n="record.retention"></label>
+                <input id="retentionDays" type="number" min="0" max="3650" required>
+              </div>
+              <div class="recording-exclusions">
+                <label for="excludedApps" data-i18n="record.excluded"></label>
+                <textarea id="excludedApps" rows="3" maxlength="4096" aria-describedby="excludedHint"></textarea>
+                <div id="excludedHint" class="muted small-text" data-i18n="record.excluded_hint"></div>
+              </div>
+              <button type="submit" data-i18n="common.save"></button>
+            </fieldset>
+          </form>
         </section>
         <section class="settings-card" aria-labelledby="dataTitle">
           <h2 id="dataTitle" data-i18n="settings.data"></h2>
           <button id="forget" class="danger" data-i18n="tools.forget"></button>
+          <form id="deletePeriod" class="setting-row delete-period">
+            <label><span data-i18n="record.from"></span><input id="deleteFrom" type="date" required></label>
+            <label><span data-i18n="record.through"></span><input id="deleteThrough" type="date" required></label>
+            <button type="submit" class="danger" data-i18n="record.delete"></button>
+          </form>
+        </section>
+        <section class="settings-card" aria-labelledby="categoryRulesTitle">
+          <h2 id="categoryRulesTitle" data-i18n="category.rules"></h2>
+          <div id="categoryRules"></div>
         </section>
       </div>
     </main>
   </div>
+
+  <dialog id="calendarDlg" aria-labelledby="calendarTitle">
+    <div class="card-heading">
+      <h3 id="calendarTitle" data-i18n="calendar.title"></h3>
+      <form method="dialog"><button type="submit" class="small" data-i18n="common.cancel"></button></form>
+    </div>
+    <div class="calendar-nav">
+      <button id="calendarPrev" type="button" data-i18n-label="calendar.prev">‹</button>
+      <strong id="calendarMonth" aria-live="polite"></strong>
+      <button id="calendarNext" type="button" data-i18n-label="calendar.next">›</button>
+    </div>
+    <div id="calendarDays" class="calendar-days"></div>
+    <p class="muted small-text" data-i18n="calendar.legend"></p>
+  </dialog>
+
+  <dialog id="categoryDlg" aria-labelledby="categoryTitle">
+    <form method="dialog">
+      <h3 id="categoryTitle" data-i18n="category.edit"></h3>
+      <p id="categoryTarget" class="muted"></p>
+      <label for="categoryValue" data-i18n="category.label"></label>
+      <select id="categoryValue"></select>
+      <label for="categoryScope" data-i18n="category.scope"></label>
+      <select id="categoryScope">
+        <option value="visit" data-i18n="category.visit"></option>
+        <option value="window" data-i18n="category.window"></option>
+        <option value="app" data-i18n="category.app"></option>
+      </select>
+      <div class="row">
+        <button value="cancel" data-i18n="common.cancel"></button>
+        <button value="ok" class="primary" data-i18n="common.save"></button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="noteDlg">
     <form method="dialog">
@@ -198,6 +294,7 @@
   </dialog>
 
   <script src="i18n.js"></script>
+  <script src="controls.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

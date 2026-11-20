@@ -5,7 +5,7 @@ use crate::model::{ActivityEvent, Session, Timestamp};
 pub const MAX_GAP_SECS: i64 = 90;
 pub const TAIL_SECS: i64 = 3;
 /// Порог для старых записей, в которых сохранено только время без ввода.
-const LEGACY_IDLE_SECS: u32 = 60 * 60;
+pub const LEGACY_IDLE_SECS: u32 = 60 * 60;
 
 pub fn sessionize(
     events: &[ActivityEvent],

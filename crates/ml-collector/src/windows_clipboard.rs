@@ -3,10 +3,11 @@ use std::slice;
 use windows::core::w;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
     OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use crate::{windows_active::window_app, ClipboardCapture};
 
 /// Формат «обычный текст в юникоде».
 const CF_UNICODETEXT: u32 = 13;
@@ -26,7 +27,7 @@ impl ClipboardWatcher {
 
     /// `ignore` — номер изменения буфера, сделанного самой программой (листание истории):
     /// такое изменение в историю заново не записывается.
-    pub fn poll(&mut self, ignore: u32) -> Option<String> {
+    pub fn poll(&mut self, ignore: u32) -> Option<ClipboardCapture> {
         let seq = unsafe { GetClipboardSequenceNumber() };
         if seq == self.last_seq {
             return None;
@@ -35,12 +36,21 @@ impl ClipboardWatcher {
             self.last_seq = seq;
             return None;
         }
+        let owner_app = unsafe { GetClipboardOwner().ok().and_then(|hwnd| window_app(hwnd)) };
         let text = unsafe { read_text() };
+        if unsafe { GetClipboardSequenceNumber() } != seq {
+            return None;
+        }
         // Если буфер был занят другой программой, пробуем снова на следующем опросе.
         if text.is_ok() {
             self.last_seq = seq;
         }
-        text.ok().flatten()
+        text.ok().flatten().map(|text| ClipboardCapture { text, owner_app })
+    }
+
+    /// Синхронизирует номер изменения, не читая содержимое буфера.
+    pub fn skip(&mut self) {
+        self.last_seq = unsafe { GetClipboardSequenceNumber() };
     }
 }
 

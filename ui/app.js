@@ -145,6 +145,7 @@ let allHits = [];
 let tab = "windows";
 let activeView = "day";
 let selectedRange = null;
+let trackHit = null;
 const viewButtons = document.querySelectorAll("[data-view]");
 // Выбранная запись буфера (Ctrl+↑/↓ двигают, Enter копирует).
 let clipSel = 0;
@@ -171,6 +172,8 @@ function setView(view) {
 }
 
 function selectRange(range) {
+  trackHit = null;
+  $("trackSelection").hidden = true;
   selectedRange = range;
   if (range) {
     setView("history");
@@ -179,11 +182,26 @@ function selectRange(range) {
   } else {
     renderHistory();
   }
-  for (const segment of $("trackSegments").children) {
-    segment.setAttribute("aria-pressed", segment.dataset.start === String(range?.start));
-  }
+  markTrackSelection();
   if (range) $("pageTitle").focus({ preventScroll: true });
   else $("q").focus();
+}
+
+function markTrackSelection() {
+  const selection = trackHit ?? selectedRange;
+  const track = $("trackSegments");
+  for (const segment of track.children) {
+    const selected = selection && segment.dataset.category === selection.category &&
+      Number(segment.dataset.start) <= selection.start && selection.start < Number(segment.dataset.end);
+    segment.setAttribute("aria-pressed", !!selected);
+  }
+  track.classList.toggle("has-hit", !!trackHit);
+  if (trackHit) {
+    const from = Number(track.dataset.from);
+    const length = Number(track.dataset.to) - from;
+    track.style.setProperty("--hit-start", `${(trackHit.start - from) / length * 100}%`);
+    track.style.setProperty("--hit-width", `${(trackHit.end - trackHit.start) / length * 100}%`);
+  }
 }
 
 function setTrackPosition(node, start, end, from, to) {
@@ -198,6 +216,8 @@ function bookmarkLabel(b) {
 function renderDayTrack(summary, dayChanged) {
   const { day_start: from, day_end: to, timeline, bookmarks } = summary;
   const track = $("trackSegments");
+  track.dataset.from = from;
+  track.dataset.to = to;
   const markers = $("trackBookmarks");
   // Соседние окна одной категории образуют один отрезок, промежутки остаются видимыми.
   const ranges = [];
@@ -239,14 +259,15 @@ function renderDayTrack(summary, dayChanged) {
     btn.type = "button";
     btn.dataset.category = category;
     btn.dataset.start = start;
+    btn.dataset.end = end;
     btn.title = t("track.range", { start: clock(start), end: clock(end), category: categoryName(category) });
     btn.setAttribute("aria-label", btn.title);
-    btn.setAttribute("aria-pressed", start === selectedRange?.start);
     btn.tabIndex = index === 0 ? 0 : -1;
     btn.onclick = () => selectRange(range);
     setTrackPosition(btn, start, end, from, to);
     track.append(btn);
   }
+  markTrackSelection();
   for (const [index, bookmark] of bookmarks.entries()) {
     const btn = el("button", "track-bookmark");
     btn.type = "button";
@@ -293,9 +314,77 @@ function historyRow(time, text, tail, button, tag = "div") {
 
 function windowRow(s) {
   const app = appName(s.app);
-  const row = historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${app} — ${s.title}` : app, shortDuration(s.end - s.start));
+  const actions = el("span", "visit-actions");
+  actions.append(el("span", "muted", shortDuration(s.end - s.start)));
+  const button = categoryButton(s);
+  if (button) actions.append(button);
+  const row = historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${app} — ${s.title}` : app, "", actions);
   row.dataset.category = s.category;
   return row;
+}
+
+// Список сессий уже отсортирован от новых к старым, поэтому первая запись определяет порядок группы.
+function groupWindowVisits(sessions) {
+  const groups = new Map();
+  for (const session of sessions) {
+    const key = JSON.stringify([renderedDate, session.app, session.title]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, sessions: [], seconds: 0 };
+      groups.set(key, group);
+    }
+    group.sessions.push(session);
+    group.seconds += session.end - session.start;
+  }
+  return [...groups.values()];
+}
+
+function visitDuration(secs) {
+  const remainder = secs % 60;
+  if (secs < 60) return shortDuration(secs);
+  const minutes = duration(secs - remainder);
+  return remainder ? `${minutes} ${shortDuration(remainder)}` : minutes;
+}
+
+function groupedWindowRow(group, open) {
+  const [latest] = group.sessions;
+  const count = group.sessions.length;
+  if (count === 1) return windowRow(latest);
+
+  const app = appName(latest.app);
+  const totals = el("span", "visit-totals");
+  const badge = el("span", "visit-count", `×${count}`);
+  badge.title = t("hist.visits", { n: count });
+  totals.append(badge, el("span", "muted", visitDuration(group.seconds)));
+  const row = historyRow(clock(latest.start), latest.title ? `${app} — ${latest.title}` : app, "", totals, "summary");
+  row.dataset.category = latest.category;
+
+  const visits = el("ul", "visit-list");
+  const block = el("details", "history-block");
+  block.dataset.historyKey = group.key;
+  block.open = open;
+  block.append(row, visits);
+
+  const showVisits = () => {
+    if (!block.open || visits.childElementCount) return;
+    const clockWithSeconds = new Intl.DateTimeFormat(I18N.locale, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+    for (const visit of group.sessions) {
+      const start = clockWithSeconds.format(visit.start * 1000);
+      const end = clockWithSeconds.format(visit.end * 1000);
+      const item = el("li", "visit");
+      const actions = el("span", "visit-actions");
+      actions.append(el("span", "", visitDuration(visit.end - visit.start)));
+      const button = categoryButton(visit);
+      if (button) actions.append(button);
+      item.append(el("span", "", `${start}–${end}`), actions);
+      visits.append(item);
+    }
+  };
+  block.ontoggle = showVisits;
+  showVisits();
+  return block;
 }
 
 const BREAK_ROW_SECS = 5 * 60;
@@ -333,7 +422,7 @@ function blockRow(b, open) {
   for (const x of b.titles) titles.append(el("div", "detail", `${x.title || appName(b.app)} · ${shortDuration(x.secs)}`));
   if (b.title_count > b.titles.length) titles.append(note(t("hist.more_hidden", { n: b.title_count - b.titles.length })));
   const block = el("details", "history-block");
-  block.dataset.start = b.start;
+  block.dataset.historyKey = b.start;
   block.open = open;
   block.append(row, titles);
   return block;
@@ -381,7 +470,10 @@ function renderHistory() {
   if (tab === "bookmarks" || tab === "downloads") return;
   const q = $("q").value.trim().toLowerCase();
   const target = $("list");
-  const openBlocks = new Set([...target.querySelectorAll("details[open]")].map((block) => block.dataset.start));
+  const openBlocks = new Set([...target.querySelectorAll("details[open]")].map((block) => block.dataset.historyKey));
+  const focusedBlock = target.contains(document.activeElement)
+    ? document.activeElement.closest("details")?.dataset.historyKey
+    : null;
   target.replaceChildren();
   $("clearClips").hidden = true;
   const range = tab === "windows" ? selectedRange : null;
@@ -394,13 +486,23 @@ function renderHistory() {
 
   let rows;
   let empty;
+  let totalRows;
   if (tab === "windows") {
-    rows = range || q || !historyBlocks.length
-      ? timelineData
-        .filter((s) => !range || (s.start < range.end && s.end > range.start))
-        .filter((s) => matches(q, appName(s.app), s.title))
-        .map(windowRow)
-      : timelineWithMarks(openBlocks);
+    const grouped = $("windowOrder").value === "grouped";
+    if (!grouped && !range && !q && historyBlocks.length) {
+      rows = timelineWithMarks(openBlocks);
+    } else {
+      const sessions = timelineData.filter((s) =>
+        (!range || (s.start < range.end && s.end > range.start)) && matches(q, appName(s.app), s.title));
+      if (grouped) {
+        const groups = groupWindowVisits(sessions);
+        totalRows = groups.length;
+        rows = groups.slice(0, HISTORY_LIMIT).map((g) => groupedWindowRow(g, openBlocks.has(g.key)));
+      } else {
+        totalRows = sessions.length;
+        rows = sessions.slice(0, HISTORY_LIMIT).map(windowRow);
+      }
+    }
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
     clipRows = clipData.filter((c) => matches(q, appName(c.app), c.text));
@@ -418,13 +520,23 @@ function renderHistory() {
     empty = q ? t("hist.empty.day_q") : t("hist.empty.clips");
   } else {
     const day = (ts) => new Date(ts * 1000).toLocaleDateString(I18N.locale, { day: "numeric", month: "short" });
-    rows = allHits.map((h) => historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${appName(h.app)} — ${h.title}` : appName(h.app), ""));
+    rows = allHits.map((h) => {
+      const button = el("button", "small", t("search.open_day"));
+      button.type = "button";
+      button.onclick = () => guarded(() => openSearchDay(h));
+      return historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${appName(h.app)} — ${h.title}` : appName(h.app), "", button);
+    });
     empty = q ? t("hist.empty.all_q") : t("hist.empty.all");
   }
 
   if (!rows.length) return target.append(note(empty));
   target.append(...rows.slice(0, HISTORY_LIMIT));
-  if (rows.length > HISTORY_LIMIT) target.append(note(t("hist.more", { n: HISTORY_LIMIT, total: rows.length })));
+  const total = totalRows ?? rows.length;
+  if (total > HISTORY_LIMIT) target.append(note(t("hist.more", { n: HISTORY_LIMIT, total })));
+  if (focusedBlock) {
+    const block = [...target.querySelectorAll("details")].find((node) => node.dataset.historyKey === focusedBlock);
+    block?.querySelector("summary").focus({ preventScroll: true });
+  }
 }
 
 function setTab(name) {
@@ -437,6 +549,7 @@ function setTab(name) {
   }
   const hasFilter = name !== "bookmarks" && name !== "downloads";
   $("historyFilter").hidden = !hasFilter;
+  $("windowOrder").hidden = name !== "windows";
   $("bookmarks").hidden = name !== "bookmarks";
   $("downloads").hidden = name !== "downloads";
   if (hasFilter) {
@@ -490,7 +603,11 @@ async function render() {
   const s = await invoke("day_summary", { date });
   if (request !== renderRequest) return;
   const dayChanged = renderedDate !== date;
-  if (dayChanged) selectedRange = null;
+  if (dayChanged) {
+    selectedRange = null;
+    trackHit = null;
+    $("trackSelection").hidden = true;
+  }
   renderedDate = date;
   $("total").textContent = s.active_secs ? shortDuration(s.active_secs) : duration(0);
   $("rhythm").textContent = renderRhythm(s.rhythm, s.away_secs);
@@ -571,7 +688,25 @@ function toolMessage(text) {
 function goToDate(date) {
   current = new Date(date);
   followToday = iso(current) === iso(new Date());
-  guarded(render);
+  return guarded(render);
+}
+
+async function openSearchDay(hit) {
+  const date = new Date(hit.last_ts * 1000);
+  setView("day");
+  await goToDate(date);
+  if (renderedDate !== iso(date) || activeView !== "day") return;
+  const matching = timelineData.filter((s) => s.app === hit.app && s.title === hit.title);
+  trackHit = matching.find((s) => s.start <= hit.last_ts && hit.last_ts < s.end) ?? matching[0] ?? null;
+  selectedRange = null;
+  markTrackSelection();
+  const label = [appName(hit.app), hit.title].filter(Boolean).join(" — ");
+  $("trackSelectionLabel").textContent = trackHit
+    ? `${clock(trackHit.start)}–${clock(trackHit.end)} · ${label}`
+    : t("search.no_window", { title: label });
+  $("trackSelection").hidden = false;
+  $("openTrackWindow").hidden = !trackHit;
+  $("pageTitle").focus({ preventScroll: true });
 }
 
 function shiftDate(days) {
@@ -598,6 +733,7 @@ $("pause").onclick = () => guarded(async () => {
 });
 
 $("clearRange").onclick = () => selectRange(null);
+$("openTrackWindow").onclick = () => { if (trackHit) selectRange(trackHit); };
 for (const button of viewButtons) {
   button.onclick = () => setView(button.dataset.view);
 }
@@ -608,7 +744,7 @@ $("addGoal").onclick = async () => {
   const mins = parseInt($("goalMin").value, 10);
   if (Number.isNaN(mins) || mins < 0) return;
   await invoke("set_goal", { category: $("goalCat").value, limitMins: mins });
-  render();
+  await Promise.all([render(), renderComparison()]);
 };
 
 $("export").onclick = async () => {
@@ -624,7 +760,7 @@ $("forget").onclick = async () => {
   if (!window.confirm(t("tools.forget_confirm"))) return;
   await invoke("forget_minutes", { minutes: 10 });
   toolMessage(t("tools.forgot"));
-  render();
+  await Promise.all([render(), renderWeek(), renderComparison()]);
 };
 
 $("autostart").onchange = async (e) => {
@@ -652,25 +788,30 @@ $("idleSettings").onsubmit = async (event) => {
 };
 
 let searchTimer;
+let searchRequest = 0;
 // Поиск по всем дням идёт в базе, остальные вкладки фильтруют уже загруженный день сразу.
 function searchAll() {
   clearTimeout(searchTimer);
+  const request = ++searchRequest;
   if (tab !== "all") return;
   const q = $("q").value.trim();
   if (!q) {
     allHits = [];
     return renderHistory();
   }
-  searchTimer = setTimeout(async () => {
-    allHits = await invoke("search", { query: q });
+  searchTimer = setTimeout(() => guarded(async () => {
+    const hits = await invoke("search", { query: q });
+    if (request !== searchRequest || tab !== "all") return;
+    allHits = hits;
     renderHistory();
-  }, 250);
+  }), 250);
 }
 
 $("q").oninput = () => {
   renderHistory();
   searchAll();
 };
+$("windowOrder").onchange = renderHistory;
 $("clearClips").onclick = async () => {
   if (!window.confirm(t("clip.clear_confirm"))) return;
   await invoke("clear_clips");
@@ -727,15 +868,18 @@ function fillLanguageControls() {
 $("lang").onchange = async (e) => {
   await I18N.setLanguage(e.target.value);
   fillLanguageControls();
+  syncTheme();
   setTab(tab);
   await guarded(render);
   await guarded(renderWeek);
   await guarded(refreshStatus);
+  await Promise.all([renderComparison(), guarded(renderCategoryRules)]);
 };
 
 async function start() {
   await I18N.init();
   fillLanguageControls();
+  initExtraControls();
   setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
   await guarded(async () => {
@@ -746,8 +890,9 @@ async function start() {
   await guarded(render);
   await guarded(renderWeek);
   await guarded(refreshStatus);
+  await Promise.all([guarded(loadRecordingSettings), guarded(renderCategoryRules), renderComparison()]);
 }
 
 start();
 setInterval(() => { guarded(render); guarded(refreshStatus); }, 15_000);
-setInterval(() => guarded(renderWeek), 5 * 60_000);
+setInterval(() => { guarded(renderWeek); renderComparison(); }, 5 * 60_000);

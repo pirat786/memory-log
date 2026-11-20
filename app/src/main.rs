@@ -7,6 +7,7 @@ mod i18n;
 mod log;
 mod state;
 mod tray;
+mod week_comparison;
 mod window;
 
 use std::sync::Arc;
@@ -63,6 +64,13 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::day_summary,
             commands::week_overview,
+            commands::week_comparison,
+            commands::recorded_days,
+            commands::recording_settings,
+            commands::set_recording_settings,
+            commands::delete_days,
+            commands::category_rules,
+            commands::set_category_override,
             commands::search,
             commands::add_bookmark,
             commands::set_goal,

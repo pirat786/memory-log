@@ -136,6 +136,48 @@ pub struct SearchHit {
     pub count: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingSettings {
+    pub clipboard_enabled: bool,
+    pub retention_days: u32,
+    pub excluded_apps: String,
+}
+
+impl RecordingSettings {
+    pub fn excludes(&self, app: &str) -> bool {
+        let app = app.to_lowercase();
+        let app = app.strip_suffix(".exe").unwrap_or(&app);
+        self.excluded_apps.lines().any(|name| name == app)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideScope {
+    Visit,
+    Window,
+    App,
+}
+
+impl OverrideScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Visit => "visit",
+            Self::Window => "window",
+            Self::App => "app",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryOverride {
+    pub scope: OverrideScope,
+    pub ts: Timestamp,
+    pub app: String,
+    pub title: String,
+    pub category: Option<Category>,
+}
+
 /// Непрерывный отрезок времени в одном окне.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {

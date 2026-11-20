@@ -3,19 +3,22 @@
 <head>
   <meta charset="utf-8">
   <title>Clipboard</title>
+  <script src="theme.js"></script>
   <style>
-    :root { color-scheme: dark; }
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #1d2029; color: #e8eaf0;
+    :root { color-scheme: light dark; --muted: light-dark(#56637f, #9aa1b2); --line: light-dark(#e0e5f0, #3a3f4e); }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root[data-theme="dark"] { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: light-dark(#fff, #1d2029); color: light-dark(#1a2340, #e8eaf0);
       font: 13px "Segoe UI", system-ui, sans-serif; user-select: none; }
-    body { box-sizing: border-box; border: 1px solid #3a3f4e; border-radius: 12px; padding: 10px 10px 8px; }
-    .head { display: flex; justify-content: space-between; color: #9aa1b2; font-size: 12px; margin: 0 4px 6px; }
+    body { box-sizing: border-box; border: 1px solid var(--line); border-radius: 12px; padding: 10px 10px 8px; }
+    .head { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin: 0 4px 6px; }
     .row { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 6px 8px; border-radius: 8px;
       border-left: 3px solid transparent; }
-    .row .app { color: #9aa1b2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .app { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row .text { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-    .row.sel { background: #2e3446; border-left-color: #8ab4ff; }
-    .foot { color: #9aa1b2; font-size: 11.5px; margin: 6px 4px 0; }
-    .empty { color: #9aa1b2; padding: 18px 8px; }
+    .row.sel { background: light-dark(#e9eaff, #2e3446); border-left-color: light-dark(#4d50cc, #8ab4ff); }
+    .foot { color: var(--muted); font-size: 11.5px; margin: 6px 4px 0; }
+    .empty { color: var(--muted); padding: 18px 8px; }
   </style>
 </head>
 <body>

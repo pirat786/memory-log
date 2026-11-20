@@ -36,7 +36,9 @@ pub fn spawn(state: Arc<AppState>) {
         // если ПК включён недавно. Берём «давно» через checked_sub.
         let long_ago = |d: Duration| Instant::now().checked_sub(d).unwrap_or_else(Instant::now);
         let mut last_system = long_ago(SYSTEM_TICK);
-        let mut last_prune = long_ago(PRUNE_EVERY);
+        let mut last_prune: Option<Instant> = None;
+        let mut last_retention = 0;
+        let mut clipboard_config_version = 0;
         let mut errors = 0u32;
         log::info("сборщик запущен");
 
@@ -49,39 +51,51 @@ pub fn spawn(state: Arc<AppState>) {
             if interrupted {
                 log::info(&format!("сборщик не работал {} сек (сон ПК или замедление Windows)", slept.as_secs()));
             }
-            if last_prune.elapsed() >= PRUNE_EVERY {
-                last_prune = Instant::now();
-                let now = Utc::now().timestamp();
-                if let Ok(st) = state.storage.lock() {
-                    if let Err(e) = st.prune(now - KEEP_SYSTEM_DAYS * 86400, now - KEEP_PROCS_DAYS * 86400) {
-                        log::info(&format!("не удалось почистить старые данные: {e}"));
-                    }
-                }
-            }
-
             let mut result = (|| -> Result<(), String> {
                 // Один замок для записи окна и постановки на паузу сохраняет порядок событий.
                 let storage = state.storage.lock().map_err(|e| e.to_string())?;
-                // Буфер опрашиваем и на паузе, чтобы скопированное во время паузы не записалось после неё.
-                let copied = clipboard.poll(state.clip_ignore.load(Ordering::Relaxed));
+                let settings = storage.recording_settings().map_err(|e| e.to_string())?;
+                if last_prune.is_none_or(|last| last.elapsed() >= PRUNE_EVERY) || last_retention != settings.retention_days {
+                    let now = Utc::now().timestamp();
+                    if settings.retention_days > 0 {
+                        let cutoff = now - i64::from(settings.retention_days) * 86400;
+                        storage.delete_between(i64::MIN, cutoff).map_err(|e| e.to_string())?;
+                    }
+                    storage.prune(now - KEEP_SYSTEM_DAYS * 86400, now - KEEP_PROCS_DAYS * 86400)
+                        .map_err(|e| e.to_string())?;
+                    last_prune = Some(Instant::now());
+                    last_retention = settings.retention_days;
+                }
+                let config_version = state.clipboard_config_version.load(Ordering::Relaxed);
+                let clipboard_changed = config_version != clipboard_config_version;
+                clipboard_config_version = config_version;
                 if state.is_paused() {
+                    clipboard.skip();
                     return Ok(());
                 }
                 let interactive = ml_collector::interactive_desktop();
-                let sample = if interactive { windows.sample().map(|s| privacy.apply(s)) } else { None };
+                let sample = if interactive { windows.sample() } else { None };
+                let excluded = sample.as_ref().is_some_and(|sample| settings.excludes(&sample.app));
+                let copied = if settings.clipboard_enabled && !clipboard_changed && interactive && !excluded {
+                    clipboard.poll(state.clip_ignore.load(Ordering::Relaxed))
+                } else {
+                    clipboard.skip();
+                    None
+                };
+                let sample = sample.map(|sample| privacy.apply(sample));
                 let threshold = state.idle_minutes.load(Ordering::Relaxed) * 60;
                 let idle = interactive && sample.as_ref().map_or_else(
                     || ml_collector::idle_seconds().unwrap_or_default(),
                     |s| s.idle_secs,
                 ) >= threshold;
                 let ts = sample.as_ref().map_or_else(|| Utc::now().timestamp(), |s| s.ts);
-                let inactive = !interactive || idle;
+                let inactive = !interactive || excluded || idle;
                 state.inactive.store(inactive, Ordering::Relaxed);
-                if (!interactive || interrupted) && !break_recorded {
+                if (!interactive || excluded || interrupted) && !break_recorded {
                     storage.insert_activity_break(ts).map_err(|e| e.to_string())?;
                     break_recorded = true;
                 }
-                if !interactive {
+                if !interactive || excluded {
                     last_window_app.clear();
                     return Ok(());
                 }
@@ -96,9 +110,14 @@ pub fn spawn(state: Arc<AppState>) {
                     }
                     last_window_app = sample.app;
                 }
-                if let Some(text) = copied {
-                    if last_window_app != HIDDEN_APP && !looks_like_secret(&text) {
-                        let entry = ClipEntry { ts: Utc::now().timestamp(), app: last_window_app.clone(), text };
+                if let Some(capture) = copied {
+                    let known_source = capture.owner_app.is_some() || settings.excluded_apps.is_empty();
+                    let app = capture.owner_app.unwrap_or_else(|| last_window_app.clone());
+                    let source = privacy.apply(ml_core::Sample { ts, app, title: String::new(), idle_secs: 0 });
+                    if known_source && last_window_app != HIDDEN_APP && source.app != HIDDEN_APP
+                        && !settings.excludes(&source.app) && !looks_like_secret(&capture.text)
+                    {
+                        let entry = ClipEntry { ts, app: source.app, text: capture.text };
                         storage.insert_clip(&entry).map_err(|e| e.to_string())?;
                     }
                 }
@@ -106,11 +125,13 @@ pub fn spawn(state: Arc<AppState>) {
             })();
             if result.is_ok() && !state.is_paused() && last_system.elapsed() >= SYSTEM_TICK {
                 last_system = Instant::now();
-                let (sample, procs) = system.snapshot();
+                let (sample, mut procs) = system.snapshot();
                 result = state.storage.lock().map_err(|e| e.to_string()).and_then(|st| {
                     if state.is_paused() {
                         return Ok(());
                     }
+                    let settings = st.recording_settings().map_err(|e| e.to_string())?;
+                    procs.retain(|proc| !settings.excludes(&proc.name));
                     st.insert_system(&sample, &procs).map_err(|e| e.to_string())
                 });
             }

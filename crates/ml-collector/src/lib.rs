@@ -17,6 +17,11 @@ pub use windows_clipboard::{set_text as set_clipboard_text, ClipboardWatcher};
 #[cfg(windows)]
 pub use windows_active::{idle_seconds, interactive_desktop};
 
+pub struct ClipboardCapture {
+    pub text: String,
+    pub owner_app: Option<String>,
+}
+
 #[cfg(not(windows))]
 pub fn idle_seconds() -> Option<u32> {
     None
@@ -37,9 +42,11 @@ impl ClipboardWatcher {
         Self
     }
 
-    pub fn poll(&mut self, _ignore: u32) -> Option<String> {
+    pub fn poll(&mut self, _ignore: u32) -> Option<ClipboardCapture> {
         None
     }
+
+    pub fn skip(&mut self) {}
 }
 
 #[cfg(not(windows))]

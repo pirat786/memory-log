@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use chrono::{Local, NaiveDate, TimeZone, Utc};
+use chrono::{Datelike, Days, Local, NaiveDate, TimeZone, Utc};
+use ml_core::categorize::apply_overrides;
+use ml_core::model::{CategoryOverride, OverrideScope, RecordingSettings, Session};
+use ml_core::privacy::HIDDEN_APP;
 use ml_core::{sessions, summary, time, Bookmark, Categorizer, Category, DayInput, DaySummary, Download, SearchHit, WeekDay};
 use ml_storage::Storage;
 use serde::Serialize;
@@ -37,6 +40,7 @@ pub struct AppState {
     pub idle_minutes: AtomicU32,
     /// Номер изменения буфера, сделанного листанием: сборщик его не записывает.
     pub clip_ignore: AtomicU32,
+    pub clipboard_config_version: AtomicU32,
     pub clip_nav: Mutex<ClipNav>,
     /// Последнее содержимое плашки: только что созданная плашка забирает его сама.
     pub clip_payload: Mutex<Option<serde_json::Value>>,
@@ -112,6 +116,7 @@ impl AppState {
             inactive: AtomicBool::new(false),
             idle_minutes: AtomicU32::new(idle_minutes),
             clip_ignore: AtomicU32::new(0),
+            clipboard_config_version: AtomicU32::new(0),
             clip_nav: Mutex::new(ClipNav { sel: 0, last: None, generation: 0 }),
             clip_payload: Mutex::new(None),
             downloads_dir,
@@ -147,8 +152,12 @@ impl AppState {
 
     pub fn set_paused(&self, value: bool) -> Result<(), String> {
         let storage = self.storage.lock().map_err(|e| e.to_string())?;
-        if !self.paused.swap(value, Ordering::Relaxed) && value {
-            storage.insert_activity_break(Utc::now().timestamp()).map_err(|e| e.to_string())?;
+        if self.paused.load(Ordering::Relaxed) != value {
+            if value {
+                storage.insert_activity_break(Utc::now().timestamp()).map_err(|e| e.to_string())?;
+            }
+            self.paused.store(value, Ordering::Relaxed);
+            self.clipboard_config_version.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -176,11 +185,12 @@ impl AppState {
     pub fn day_summary(&self, date: Option<&str>) -> Result<DaySummary, String> {
         let date = parse_date(date, &self.lang())?;
         let (from, to) = time::day_bounds(date);
-        let (samples, bookmarks, system, procs, goals, clips) = {
+        let (samples, overrides, bookmarks, system, procs, goals, clips) = {
             let st = self.storage.lock().map_err(|e| e.to_string())?;
             let e = |e: ml_storage::StorageError| e.to_string();
             (
                 st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS).map_err(e)?,
+                st.category_overrides(from, to).map_err(e)?,
                 st.bookmarks_between(from, to).map_err(e)?,
                 st.system_between(from, to).map_err(e)?,
                 st.procs_between(from, to).map_err(e)?,
@@ -188,7 +198,8 @@ impl AppState {
                 st.clips_between(from, to).map_err(e)?,
             )
         };
-        let (sessions, away_secs) = sessions::sessionize_with_away(&samples, &self.categorizer, (from, to));
+        let (mut sessions, away_secs) = sessions::sessionize_with_away(&samples, &self.categorizer, (from, to));
+        apply_overrides(&mut sessions, &overrides);
         Ok(summary::build(DayInput {
             date: &date.to_string(),
             bounds: (from, to),
@@ -232,13 +243,82 @@ impl AppState {
             .rev()
             .map(|back| {
                 let date = today - chrono::Duration::days(back);
-                let (from, to) = time::day_bounds(date);
-                let samples = st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
-                    .map_err(|e| e.to_string())?;
-                let sessions = sessions::sessionize(&samples, &self.categorizer, (from, to));
+                let sessions = self.sessions_for_day(&st, date).map_err(|e| e.to_string())?;
                 Ok(summary::week_day(&date.to_string(), &sessions))
             })
             .collect()
+    }
+
+    pub(crate) fn sessions_for_day(&self, st: &Storage, date: NaiveDate) -> ml_storage::Result<Vec<Session>> {
+        let (from, to) = time::day_bounds(date);
+        let events = st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)?;
+        let mut sessions = sessions::sessionize(&events, &self.categorizer, (from, to));
+        apply_overrides(&mut sessions, &st.category_overrides(from, to)?);
+        Ok(sessions)
+    }
+
+    pub fn recording_settings(&self) -> Result<RecordingSettings, String> {
+        self.storage.lock().map_err(|e| e.to_string())?.recording_settings().map_err(|e| e.to_string())
+    }
+
+    pub fn set_recording_settings(&self, mut settings: RecordingSettings) -> Result<(), String> {
+        if settings.retention_days > 3650 || settings.excluded_apps.len() > 16384 {
+            return Err(i18n::t(&self.lang(), "record.invalid"));
+        }
+        let mut apps: Vec<_> = settings.excluded_apps.lines().map(|name| {
+            let name = name.trim().to_lowercase();
+            name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+        }).filter(|name| !name.is_empty()).collect();
+        apps.sort_unstable();
+        apps.dedup();
+        settings.excluded_apps = apps.join("\n");
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let old = st.recording_settings().map_err(|e| e.to_string())?;
+        st.set_recording_settings(&settings).map_err(|e| e.to_string())?;
+        if old.clipboard_enabled != settings.clipboard_enabled || old.excluded_apps != settings.excluded_apps {
+            self.clipboard_config_version.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    pub fn delete_days(&self, from: &str, through: &str) -> Result<(), String> {
+        let lang = self.lang();
+        let from = parse_date(Some(from), &lang)?;
+        let through = parse_date(Some(through), &lang)?;
+        if through < from || through > time::today() {
+            return Err(i18n::t(&lang, "record.bad_range"));
+        }
+        self.storage.lock().map_err(|e| e.to_string())?
+            .delete_between(time::day_bounds(from).0, time::day_bounds(through).1)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn recorded_days(&self, month: &str) -> Result<Vec<String>, String> {
+        let mut date = parse_date(Some(month), &self.lang())?;
+        let month = date.month();
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let mut days = Vec::new();
+        while date.month() == month && date <= time::today() {
+            let (from, to) = time::day_bounds(date);
+            if st.has_records(from, to).map_err(|e| e.to_string())? {
+                days.push(date.to_string());
+            }
+            date = date.checked_add_days(Days::new(1)).ok_or_else(|| "invalid calendar date".to_string())?;
+        }
+        Ok(days)
+    }
+
+    pub fn category_rules(&self) -> Result<Vec<CategoryOverride>, String> {
+        self.storage.lock().map_err(|e| e.to_string())?.category_overrides(0, 0).map_err(|e| e.to_string())
+    }
+
+    pub fn set_category_override(&self, change: CategoryOverride) -> Result<(), String> {
+        if change.app.is_empty() || change.app == HIDDEN_APP || change.app.len() > 1024 || change.title.len() > 4096
+            || (change.scope == OverrideScope::Window && change.title.is_empty())
+        {
+            return Err(i18n::t(&self.lang(), "category.invalid"));
+        }
+        self.storage.lock().map_err(|e| e.to_string())?.set_category_override(&change).map_err(|e| e.to_string())
     }
 
     /// «Запомнить это»: отметка привязывается к последнему известному окну.
@@ -280,14 +360,10 @@ impl AppState {
     /// Сохраняет сессии дня в CSV (открывается в Excel) и возвращает путь к файлу.
     pub fn export_day_csv(&self, date: Option<&str>, dir: &Path) -> Result<String, String> {
         let date = parse_date(date, &self.lang())?;
-        let (from, to) = time::day_bounds(date);
-        let samples = self
-            .storage
-            .lock()
-            .map_err(|e| e.to_string())?
-            .activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
-            .map_err(|e| e.to_string())?;
-        let sessions = sessions::sessionize(&samples, &self.categorizer, (from, to));
+        let sessions = {
+            let st = self.storage.lock().map_err(|e| e.to_string())?;
+            self.sessions_for_day(&st, date).map_err(|e| e.to_string())?
+        };
 
         let mut csv = format!("\u{feff}{}\r\n", i18n::t(&self.lang(), "csv.header"));
         for s in &sessions {

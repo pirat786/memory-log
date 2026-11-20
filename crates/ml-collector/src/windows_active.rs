@@ -69,10 +69,14 @@ unsafe fn foreground_window() -> Option<(String, String)> {
     let n = GetWindowTextW(hwnd, &mut buf);
     let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
 
+    let app = window_app(hwnd).unwrap_or_else(|| "unknown".to_string());
+    Some((app, title))
+}
+
+pub(crate) unsafe fn window_app(hwnd: HWND) -> Option<String> {
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    let app = process_name(pid).unwrap_or_else(|| "unknown".to_string());
-    Some((app, title))
+    process_name(pid)
 }
 
 unsafe fn process_name(pid: u32) -> Option<String> {

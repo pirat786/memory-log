@@ -1,6 +1,7 @@
 use std::sync::{atomic::Ordering, Arc};
 
 use ml_core::{DaySummary, SearchHit, WeekDay};
+use ml_core::model::{CategoryOverride, RecordingSettings};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
@@ -16,6 +17,43 @@ pub fn day_summary(state: Shared, date: Option<String>) -> Result<DaySummary, St
 #[tauri::command]
 pub fn week_overview(state: Shared) -> Result<Vec<WeekDay>, String> {
     state.week_overview()
+}
+
+#[tauri::command]
+pub async fn week_comparison(state: Shared<'_>, work_hours: Option<[u32; 2]>) -> Result<crate::week_comparison::WeekComparison, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || crate::week_comparison::compare(&state, work_hours))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn recorded_days(state: Shared, month: String) -> Result<Vec<String>, String> {
+    state.recorded_days(&month)
+}
+
+#[tauri::command]
+pub fn recording_settings(state: Shared) -> Result<RecordingSettings, String> {
+    state.recording_settings()
+}
+
+#[tauri::command]
+pub fn set_recording_settings(state: Shared, settings: RecordingSettings) -> Result<(), String> {
+    state.set_recording_settings(settings)
+}
+
+#[tauri::command]
+pub fn delete_days(state: Shared, from: String, through: String) -> Result<(), String> {
+    state.delete_days(&from, &through)
+}
+
+#[tauri::command]
+pub fn category_rules(state: Shared) -> Result<Vec<CategoryOverride>, String> {
+    state.category_rules()
+}
+
+#[tauri::command]
+pub fn set_category_override(state: Shared, change: CategoryOverride) -> Result<(), String> {
+    state.set_category_override(change)
 }
 
 #[tauri::command]
