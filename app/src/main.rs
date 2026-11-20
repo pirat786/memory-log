@@ -87,6 +87,7 @@ fn main() {
             commands::sync_now,
             commands::sync_device_days,
             commands::sync_search,
+            commands::sync_remove_peer,
             #[cfg(windows)]
             updater::updater_configured,
             #[cfg(windows)]

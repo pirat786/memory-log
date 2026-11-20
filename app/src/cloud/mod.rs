@@ -324,6 +324,27 @@ pub fn rename(state: &AppState, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn remove_peer(state: &AppState, device: &str) -> Result<(), String> {
+    let id = Uuid::parse_str(device).map_err(|_| "sync.missing".to_string())?;
+    let device = id.simple().to_string();
+    let _gate = state.sync.gate.lock().map_err(|e| e.to_string())?;
+    let link = state.storage.lock().map_err(|e| e.to_string())?.sync_link().map_err(|e| e.to_string())?;
+    if !link.enabled || device == link.device.id {
+        return Err("sync.missing".into());
+    }
+    let access = state.sync.access_token(&link)?;
+    let drive = Drive(&access);
+    let files = drive.files()?;
+    for (name, file) in &files {
+        if parse_filename(name).is_some_and(|(owner, _)| owner == device) {
+            drive.delete(file)?;
+        }
+    }
+    state.storage.lock().map_err(|e| e.to_string())?.remove_sync_peer(&device).map_err(|e| e.to_string())?;
+    state.sync.update_error(None);
+    Ok(())
+}
+
 fn sync_once(state: &AppState) -> Result<bool, String> {
     let _gate = match state.sync.gate.try_lock() {
         Ok(lock) => lock,

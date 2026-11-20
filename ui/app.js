@@ -905,16 +905,27 @@ async function start() {
   await guarded(render);
   await guarded(renderWeek);
   await guarded(refreshStatus);
-  await Promise.all([guarded(loadRecordingSettings), guarded(renderCategoryRules), guarded(refreshSync), renderComparison()]);
+  await guarded(refreshSync);
+  void Promise.all([guarded(loadRecordingSettings), guarded(renderCategoryRules), renderComparison()]);
 }
 
 start();
-setInterval(() => {
+function refreshVisible() {
+  if (document.hidden) return;
   guarded(render);
   guarded(refreshStatus);
   if (activeView !== "settings") guarded(refreshSync);
-}, 15_000);
+}
+document.addEventListener("visibilitychange", refreshVisible);
+setInterval(refreshVisible, 15_000);
 setInterval(() => {
-  if (activeView === "settings" && !document.hidden) guarded(refreshSync);
+  if (activeView === "settings" && !document.hidden && (syncInfo?.busy || syncInfo?.sign_in)) {
+    guarded(refreshSync);
+  }
 }, 1000);
-setInterval(() => { guarded(renderWeek); renderComparison(); }, 5 * 60_000);
+setInterval(() => {
+  if (!document.hidden) {
+    guarded(renderWeek);
+    renderComparison();
+  }
+}, 5 * 60_000);

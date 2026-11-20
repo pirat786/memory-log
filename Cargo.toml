@@ -23,7 +23,6 @@ ml-collector = { path = "crates/ml-collector" }
 
 [profile.release]
 opt-level = "s"
-lto = true
-codegen-units = 1
+lto = "thin"
 strip = true
 panic = "abort"

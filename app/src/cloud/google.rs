@@ -223,6 +223,15 @@ impl Drive<'_> {
         self.request("GET", &format!("/drive/v3/files/{id}?alt=media"), None, &[])
     }
 
+    pub fn delete(&self, file: &File) -> Result<(), String> {
+        let id: String = form_urlencoded::byte_serialize(file.id.as_bytes()).collect();
+        match self.request("DELETE", &format!("/drive/v3/files/{id}"), None, &[]) {
+            Ok(_) => Ok(()),
+            Err(error) if error == "Google Drive HTTP 404" => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn upload(&self, name: &str, bytes: &[u8], previous: Option<&File>) -> Result<(), String> {
         let digest = format!("{:x}", Sha256::digest(bytes));
         if previous.and_then(|file| file.app_properties.get("sha256")) == Some(&digest) {

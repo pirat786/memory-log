@@ -197,6 +197,15 @@ impl Storage {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    pub fn remove_sync_peer(&self, device: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for table in ["sync_peer_files", "sync_peer_samples", "sync_peer_bookmarks"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE device = ?1"), [device])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn peer_activity(&self, device: &str, from: i64, to: i64) -> Result<Vec<ActivityEvent>> {
         let mut stmt = self.conn.prepare(
             "SELECT ts, app, title, idle_secs, kind FROM sync_peer_samples WHERE device = ?1 AND ts >= ?2 AND ts < ?3 ORDER BY ts, day, position",

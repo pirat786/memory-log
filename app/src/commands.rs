@@ -11,13 +11,17 @@ use crate::cloud::{self, SyncStatus};
 type Shared<'a> = State<'a, Arc<AppState>>;
 
 #[tauri::command]
-pub fn day_summary(state: Shared, date: Option<String>) -> Result<DaySummary, String> {
-    state.day_summary(date.as_deref())
+pub async fn day_summary(state: Shared<'_>, date: Option<String>) -> Result<DaySummary, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.day_summary(date.as_deref()))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn week_overview(state: Shared) -> Result<Vec<WeekDay>, String> {
-    state.week_overview()
+pub async fn week_overview(state: Shared<'_>) -> Result<Vec<WeekDay>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.week_overview())
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -73,6 +77,13 @@ pub async fn sync_search(state: Shared<'_>, query: String, device: Option<String
 }
 
 #[tauri::command]
+pub async fn sync_remove_peer(state: Shared<'_>, device: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cloud::remove_peer(&state, &device))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn recording_settings(state: Shared) -> Result<RecordingSettings, String> {
     state.recording_settings()
 }
@@ -98,8 +109,10 @@ pub fn set_category_override(state: Shared, change: CategoryOverride) -> Result<
 }
 
 #[tauri::command]
-pub fn search(state: Shared, query: String) -> Result<Vec<SearchHit>, String> {
-    state.search(&query)
+pub async fn search(state: Shared<'_>, query: String) -> Result<Vec<SearchHit>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.search(&query))
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

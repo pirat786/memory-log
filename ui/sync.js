@@ -103,11 +103,26 @@ async function refreshSync() {
   }
 
   const devices = [info.device, ...info.peers];
-  if (previous && JSON.stringify(devices) === JSON.stringify([previous.device, ...previous.peers])) return;
+  const deviceKey = JSON.stringify({ devices, busy: syncSubmitting || !!info.sign_in });
+  if (previous && $("syncDevices").dataset.key === deviceKey) return;
+  $("syncDevices").dataset.key = deviceKey;
   $("syncDevices").replaceChildren(...devices.map((device, index) => {
-    const row = el("div", "item");
-    row.append(el("strong", "", index ? device.label : t("sync.this_pc", { label: device.label })),
+    const row = el("div", "item sync-device");
+    const infoBox = el("div");
+    infoBox.append(el("strong", "", index ? device.label : t("sync.this_pc", { label: device.label })),
       el("code", "device-id", device.id));
+    row.append(infoBox);
+    if (index > 0) {
+      const remove = el("button", "small danger", t("sync.remove_peer"));
+      remove.type = "button";
+      remove.disabled = syncSubmitting || !!info.sign_in;
+      remove.onclick = () => {
+        if (window.confirm(t("sync.confirm_remove_peer", { label: device.label }))) {
+          syncAction(() => invoke("sync_remove_peer", { device: device.id }));
+        }
+      };
+      row.append(remove);
+    }
     return row;
   }));
 }

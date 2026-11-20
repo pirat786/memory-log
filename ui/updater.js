@@ -1,6 +1,8 @@
 let availableUpdate = null;
 let updateStage = "checking";
 let updateBusy = false;
+let lastUpdateCheck = 0;
+const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 
 function renderUpdateStatus() {
   $("updateStatus").textContent = t(`update.${updateStage}`, { version: availableUpdate });
@@ -13,6 +15,7 @@ function renderUpdateStatus() {
 async function checkForAppUpdate() {
   if (updateBusy) return;
   updateBusy = true;
+  lastUpdateCheck = Date.now();
   updateStage = "checking";
   availableUpdate = null;
   renderUpdateStatus();
@@ -56,4 +59,11 @@ async function initAppUpdates() {
     }
   };
   await checkForAppUpdate();
+  const checkIfStale = () => {
+    if (!document.hidden && !availableUpdate && Date.now() - lastUpdateCheck >= UPDATE_CHECK_INTERVAL) {
+      void checkForAppUpdate();
+    }
+  };
+  document.addEventListener("visibilitychange", checkIfStale);
+  setInterval(checkIfStale, 60 * 60 * 1000);
 }
