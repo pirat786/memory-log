@@ -321,3 +321,31 @@ pub fn widget_resize(app: AppHandle, expanded: bool) {
 pub fn open_main_window(app: AppHandle) {
     crate::window::show_main(&app);
 }
+
+#[tauri::command]
+pub async fn quick_drop(
+    app: AppHandle,
+    paths: Vec<String>,
+    mode: String,
+    max_dim: u32,
+    quality: u8,
+    zip_mode: Option<String>,
+) -> Result<crate::quick_files::QuickFileReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::quick_files::handle_drop(
+            paths,
+            &mode,
+            max_dim,
+            quality,
+            zip_mode.as_deref().unwrap_or("fast"),
+            Some(&app),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn quick_drop_cancel() {
+    crate::quick_files::cancel_drop();
+}

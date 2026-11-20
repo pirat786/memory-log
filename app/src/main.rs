@@ -6,6 +6,7 @@ mod collector_loop;
 mod commands;
 mod i18n;
 mod log;
+mod quick_files;
 mod state;
 mod sys_tools;
 mod tray;
@@ -132,6 +133,8 @@ fn main() {
             commands::widget_open,
             commands::widget_resize,
             commands::open_main_window,
+            commands::quick_drop,
+            commands::quick_drop_cancel,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось собрать Memory Log")
