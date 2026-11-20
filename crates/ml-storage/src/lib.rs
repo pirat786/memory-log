@@ -8,6 +8,8 @@ use ml_core::sessions::LEGACY_IDLE_SECS;
 use ml_core::{ActivityEvent, Bookmark, Category, ClipEntry, Goal, ProcSample, Sample, SearchHit, SystemSample, Timestamp};
 use rusqlite::{params, Connection};
 
+pub mod sync;
+
 /// Миграции применяются по порядку; номер версии хранится в `PRAGMA user_version`.
 /// Старые файлы не менять, только добавлять новые в конец.
 const MIGRATIONS: &[&str] = &[
@@ -22,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     // База 0.2.0 могла получить версию 8 без столбца idle_secs.
     ADD_IDLE_SECONDS,
     include_str!("../migrations/010_preferences.sql"),
+    include_str!("../migrations/011_sync.sql"),
 ];
 const ADD_IDLE_SECONDS: &str = include_str!("../migrations/007_idle_secs.sql");
 const ACTIVITY_SCHEMA_VERSION: usize = 8;
@@ -37,6 +40,8 @@ pub enum StorageError {
     Corrupt(String),
     #[error("не удалось переместить повреждённую базу: {0}")]
     Io(#[from] std::io::Error),
+    #[error("invalid synchronization data: {0}")]
+    SyncData(#[from] serde_json::Error),
 }
 
 impl StorageError {
@@ -48,7 +53,7 @@ impl StorageError {
                 let text = e.to_string();
                 text.contains("malformed") || text.contains("not a database")
             }
-            StorageError::Io(_) => false,
+            StorageError::Io(_) | StorageError::SyncData(_) => false,
         }
     }
 }

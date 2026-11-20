@@ -157,6 +157,7 @@ const tabNoteText = (name) => (name === "windows" ? "" : t(`hist.note.${name}`))
 const matches = (q, ...fields) => !q || fields.some((f) => f.toLowerCase().includes(q));
 
 function setView(view) {
+  const previousScope = currentDeviceScope();
   if (activeView !== view) window.scrollTo(0, 0);
   activeView = view;
   for (const button of viewButtons) {
@@ -169,6 +170,8 @@ function setView(view) {
   title.dataset.i18n = `view.${view}`;
   title.textContent = t(title.dataset.i18n);
   $("dateNav").hidden = view === "settings";
+  if (syncInfo) updateDeviceControls();
+  if (previousScope !== currentDeviceScope()) guarded(render);
 }
 
 function selectRange(range) {
@@ -210,7 +213,7 @@ function setTrackPosition(node, start, end, from, to) {
 }
 
 function bookmarkLabel(b) {
-  return [clock(b.ts), appName(b.app), b.title, b.note].filter(Boolean).join(" · ");
+  return [clock(b.ts), b.device_label, appName(b.app), b.title, b.note].filter(Boolean).join(" · ");
 }
 
 function renderDayTrack(summary, dayChanged) {
@@ -318,7 +321,8 @@ function windowRow(s) {
   actions.append(el("span", "muted", shortDuration(s.end - s.start)));
   const button = categoryButton(s);
   if (button) actions.append(button);
-  const row = historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${app} — ${s.title}` : app, "", actions);
+  const title = [s.device_label, s.title ? `${app} — ${s.title}` : app].filter(Boolean).join(" · ");
+  const row = historyRow(`${clock(s.start)}–${clock(s.end)}`, title, "", actions);
   row.dataset.category = s.category;
   return row;
 }
@@ -327,7 +331,7 @@ function windowRow(s) {
 function groupWindowVisits(sessions) {
   const groups = new Map();
   for (const session of sessions) {
-    const key = JSON.stringify([renderedDate, session.app, session.title]);
+    const key = JSON.stringify([renderedDate, session.device, session.app, session.title]);
     let group = groups.get(key);
     if (!group) {
       group = { key, sessions: [], seconds: 0 };
@@ -356,7 +360,8 @@ function groupedWindowRow(group, open) {
   const badge = el("span", "visit-count", `×${count}`);
   badge.title = t("hist.visits", { n: count });
   totals.append(badge, el("span", "muted", visitDuration(group.seconds)));
-  const row = historyRow(clock(latest.start), latest.title ? `${app} — ${latest.title}` : app, "", totals, "summary");
+  const title = [latest.device_label, latest.title ? `${app} — ${latest.title}` : app].filter(Boolean).join(" · ");
+  const row = historyRow(clock(latest.start), title, "", totals, "summary");
   row.dataset.category = latest.category;
 
   const visits = el("ul", "visit-list");
@@ -411,6 +416,7 @@ function timelineWithMarks(openBlocks) {
 function blockRow(b, open) {
   const main = b.titles[0]?.title ?? "";
   let text = main ? `${appName(b.app)} — ${main}` : appName(b.app);
+  if (b.device_label) text = `${b.device_label} · ${text}`;
   if (b.title_count > 1) text += ` ${t("hist.more_titles", { n: b.title_count - 1 })}`;
   const expandable = b.title_count > 1;
   const row = historyRow(`${clock(b.start)}–${clock(b.end)}`, text, shortDuration(b.active_secs), null, expandable ? "summary" : "div");
@@ -524,7 +530,8 @@ function renderHistory() {
       const button = el("button", "small", t("search.open_day"));
       button.type = "button";
       button.onclick = () => guarded(() => openSearchDay(h));
-      return historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, h.title ? `${appName(h.app)} — ${h.title}` : appName(h.app), "", button);
+      const title = [h.device && deviceName(h.device), h.title ? `${appName(h.app)} — ${h.title}` : appName(h.app)].filter(Boolean).join(" · ");
+      return historyRow(`${day(h.last_ts)} ${clock(h.last_ts)}`, title, "", button);
     });
     empty = q ? t("hist.empty.all_q") : t("hist.empty.all");
   }
@@ -600,22 +607,25 @@ async function render() {
     else button.removeAttribute("aria-current");
   }
 
-  const s = await invoke("day_summary", { date });
+  const scope = currentDeviceScope();
+  const { summary: s, devices } = await loadDeviceDay(date, scope);
   if (request !== renderRequest) return;
-  const dayChanged = renderedDate !== date;
+  const dayChanged = renderedDate !== date || renderedDeviceScope !== scope;
   if (dayChanged) {
     selectedRange = null;
     trackHit = null;
     $("trackSelection").hidden = true;
   }
   renderedDate = date;
+  renderedDeviceScope = scope;
   $("total").textContent = s.active_secs ? shortDuration(s.active_secs) : duration(0);
   $("rhythm").textContent = renderRhythm(s.rhythm, s.away_secs);
 
   timelineData = s.timeline;
   historyBlocks = s.history_blocks;
   clipData = s.clips;
-  renderDayTrack(s, dayChanged);
+  renderDeviceOverview(scope, devices);
+  if (scope !== "all") renderDayTrack(s, dayChanged);
   renderHistory();
 
   bars($("categories"), s.by_category.map((c) => ({ category: c.category, label: categoryName(c.category), secs: c.secs })));
@@ -693,14 +703,15 @@ function goToDate(date) {
 
 async function openSearchDay(hit) {
   const date = new Date(hit.last_ts * 1000);
+  if (hit.device) setDeviceScope(hit.device, false);
   setView("day");
   await goToDate(date);
-  if (renderedDate !== iso(date) || activeView !== "day") return;
+  if (renderedDate !== iso(date) || renderedDeviceScope !== currentDeviceScope() || activeView !== "day") return;
   const matching = timelineData.filter((s) => s.app === hit.app && s.title === hit.title);
   trackHit = matching.find((s) => s.start <= hit.last_ts && hit.last_ts < s.end) ?? matching[0] ?? null;
   selectedRange = null;
   markTrackSelection();
-  const label = [appName(hit.app), hit.title].filter(Boolean).join(" — ");
+  const label = [hit.device && deviceName(hit.device), appName(hit.app), hit.title].filter(Boolean).join(" — ");
   $("trackSelectionLabel").textContent = trackHit
     ? `${clock(trackHit.start)}–${clock(trackHit.end)} · ${label}`
     : t("search.no_window", { title: label });
@@ -800,7 +811,7 @@ function searchAll() {
     return renderHistory();
   }
   searchTimer = setTimeout(() => guarded(async () => {
-    const hits = await invoke("search", { query: q });
+    const hits = await searchForDevice(q, currentDeviceScope());
     if (request !== searchRequest || tab !== "all") return;
     allHits = hits;
     renderHistory();
@@ -869,6 +880,8 @@ $("lang").onchange = async (e) => {
   await I18N.setLanguage(e.target.value);
   fillLanguageControls();
   syncTheme();
+  renderUpdateStatus();
+  if (syncInfo) await guarded(refreshSync);
   setTab(tab);
   await guarded(render);
   await guarded(renderWeek);
@@ -880,6 +893,8 @@ async function start() {
   await I18N.init();
   fillLanguageControls();
   initExtraControls();
+  initSyncControls();
+  void initAppUpdates();
   setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
   await guarded(async () => {
@@ -890,9 +905,16 @@ async function start() {
   await guarded(render);
   await guarded(renderWeek);
   await guarded(refreshStatus);
-  await Promise.all([guarded(loadRecordingSettings), guarded(renderCategoryRules), renderComparison()]);
+  await Promise.all([guarded(loadRecordingSettings), guarded(renderCategoryRules), guarded(refreshSync), renderComparison()]);
 }
 
 start();
-setInterval(() => { guarded(render); guarded(refreshStatus); }, 15_000);
+setInterval(() => {
+  guarded(render);
+  guarded(refreshStatus);
+  if (activeView !== "settings") guarded(refreshSync);
+}, 15_000);
+setInterval(() => {
+  if (activeView === "settings" && !document.hidden) guarded(refreshSync);
+}, 1000);
 setInterval(() => { guarded(renderWeek); renderComparison(); }, 5 * 60_000);

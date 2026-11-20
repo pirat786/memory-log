@@ -1,10 +1,32 @@
 use std::path::Path;
 use std::{env, fs};
 
+const RELEASE_GOOGLE_CLIENT_ID: &str =
+    "905394446925-55ermvpejet4lbn6qcud6390h75jkhqs.apps.googleusercontent.com";
+
 /// Языковые файлы лежат в ui/i18n/ и общие для интерфейса и Rust.
 /// Здесь они встраиваются в программу: новый язык добавляется файлом, код менять не нужно.
 fn main() {
     println!("cargo:rerun-if-changed=../ui");
+    println!("cargo:rerun-if-env-changed=MEMORY_LOG_GOOGLE_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=MEMORY_LOG_GOOGLE_CLIENT_SECRET");
+    assert!(
+        !cfg!(feature = "google-sync-release")
+            || env::var("MEMORY_LOG_GOOGLE_CLIENT_SECRET").is_ok_and(|value| !value.trim().is_empty()),
+        "Set MEMORY_LOG_GOOGLE_CLIENT_SECRET from the Google Desktop OAuth client configuration to build with google-sync-release."
+    );
+    let configured_id = env::var("MEMORY_LOG_GOOGLE_CLIENT_ID").ok().filter(|id| !id.is_empty());
+    let client_id = configured_id.as_deref()
+        .or(cfg!(feature = "google-sync-release").then_some(RELEASE_GOOGLE_CLIENT_ID));
+    if let Some(client_id) = client_id {
+        assert!(
+            client_id.strip_suffix(".apps.googleusercontent.com").is_some_and(|prefix| !prefix.is_empty())
+                && client_id.len() <= 255
+                && client_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-_".contains(&byte)),
+            "MEMORY_LOG_GOOGLE_CLIENT_ID must be a Google Desktop OAuth client ID."
+        );
+        println!("cargo:rustc-env=MEMORY_LOG_GOOGLE_CLIENT_ID={client_id}");
+    }
 
     let mut langs: Vec<(String, String)> = Vec::new();
     for entry in fs::read_dir("../ui/i18n").expect("нет папки ui/i18n") {

@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::state::{AppState, Status};
+use crate::cloud::{self, SyncStatus};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -27,8 +28,48 @@ pub async fn week_comparison(state: Shared<'_>, work_hours: Option<[u32; 2]>) ->
 }
 
 #[tauri::command]
-pub fn recorded_days(state: Shared, month: String) -> Result<Vec<String>, String> {
-    state.recorded_days(&month)
+pub fn recorded_days(state: Shared, month: String, device: Option<String>) -> Result<Vec<String>, String> {
+    state.recorded_days(&month, device.as_deref())
+}
+
+#[tauri::command]
+pub fn sync_status(state: Shared) -> Result<SyncStatus, String> {
+    cloud::status(&state)
+}
+
+#[tauri::command]
+pub async fn sync_connect(state: Shared<'_>, label: String, include_history: bool) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cloud::connect(&state, label, include_history))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn sync_disconnect(state: Shared<'_>) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cloud::disconnect(&state)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn sync_rename(state: Shared, label: String) -> Result<(), String> {
+    cloud::rename(&state, &label)
+}
+
+#[tauri::command]
+pub fn sync_now(state: Shared) {
+    state.sync.wake();
+}
+
+#[tauri::command]
+pub async fn sync_device_days(state: Shared<'_>, date: String, device: Option<String>) -> Result<Vec<crate::state::DeviceDay>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.synced_days(&date, device.as_deref())).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn sync_search(state: Shared<'_>, query: String, device: Option<String>) -> Result<Vec<ml_storage::sync::PeerHit>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.sync_search(&query, device.as_deref())).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

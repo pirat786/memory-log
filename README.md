@@ -3,7 +3,8 @@
 **English** · [Русский](README.ru.md)
 
 A local "memory of your computer" for Windows: it quietly records what you worked on during the day
-and shows a clear summary. **Everything stays on your PC.** Nothing is sent over the network.
+and shows a clear summary. Data stays on your PC by default. You can opt in to Google Drive sync
+for your personal devices.
 
 ## Features
 
@@ -43,6 +44,38 @@ warning because the file is not code-signed: choose "More info → Run anyway". 
 - Window titles are recorded, not the content of windows. Keystrokes are not recorded.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works (in Russian).
+
+## Google Drive sync
+
+Sync is off by default. PCs linked to the same account can read each other's synced window history,
+bookmarks, and category rules. Clipboard history and system metrics stay on the source PC. Files
+are transferred over HTTPS without additional file encryption by Memory Log.
+
+On each PC, click **Connect Google** and sign in to the same Google account. The device name
+is prefilled. Uploading history recorded before connection is optional.
+
+### Build with Google sign-in
+
+See the [release setup guide (Russian)](docs/PUBLISHING.ru.md) for GitHub Releases, signed in-app updates, and Google OAuth publishing.
+
+The maintainer enables the Google Drive API and creates a **Desktop app** OAuth client with
+the `drive.appdata` scope in the app's Google Cloud project. For distribution to other people,
+configure an **External** audience and publish the OAuth app. External apps in Testing mode
+receive seven-day refresh tokens.
+
+Set `MEMORY_LOG_GOOGLE_CLIENT_SECRET` in the build environment to the `installed.client_secret`
+value from the matching Desktop app OAuth configuration. Keep the downloaded JSON out of Git.
+The following command embeds Memory Log's Desktop OAuth credentials:
+
+```powershell
+cargo build --release --manifest-path app/Cargo.toml --features google-sync-release
+```
+
+For a custom Google Cloud project, override `MEMORY_LOG_GOOGLE_CLIENT_ID` in the build environment.
+The ordinary local build works without OAuth configuration.
+
+History removed on its source PC disappears on the other devices after synchronization.
+Disconnecting one PC preserves the files on Drive.
 
 ## Build from source (Windows)
 

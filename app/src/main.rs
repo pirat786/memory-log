@@ -1,12 +1,15 @@
 #![windows_subsystem = "windows"]
 
 mod clip_nav;
+mod cloud;
 mod collector_loop;
 mod commands;
 mod i18n;
 mod log;
 mod state;
 mod tray;
+#[cfg(windows)]
+mod updater;
 mod week_comparison;
 mod window;
 
@@ -42,6 +45,11 @@ fn main() {
                 .build(),
         )
         .setup(|app| {
+            #[cfg(windows)]
+            if updater::updater_configured(app.handle().clone()) {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.manage(updater::PendingUpdate::default());
+            }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             log::init(dir.join("memory-log.log"));
@@ -49,6 +57,7 @@ fn main() {
 
             let state = Arc::new(AppState::open(&dir.join("memory-log.db"), app.path().download_dir().ok())?);
             collector_loop::spawn(state.clone());
+            cloud::spawn(state.clone());
             tray::build(app, state.clone())?;
             app.manage(state);
 
@@ -71,6 +80,19 @@ fn main() {
             commands::delete_days,
             commands::category_rules,
             commands::set_category_override,
+            commands::sync_status,
+            commands::sync_connect,
+            commands::sync_disconnect,
+            commands::sync_rename,
+            commands::sync_now,
+            commands::sync_device_days,
+            commands::sync_search,
+            #[cfg(windows)]
+            updater::updater_configured,
+            #[cfg(windows)]
+            updater::check_update,
+            #[cfg(windows)]
+            updater::install_update,
             commands::search,
             commands::add_bookmark,
             commands::set_goal,

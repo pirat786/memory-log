@@ -1,0 +1,115 @@
+name: Prepare Windows release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check release version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r '.version' app/tauri.conf.json)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version in app/tauri.conf.json: $version" >&2
+            exit 1
+          fi
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" != "$tag" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match app/tauri.conf.json ($version)." >&2
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $tag does not exist yet, will build and publish."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  windows:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test release source
+        run: cargo test --workspace --locked
+      - name: Install Tauri CLI
+        run: npm install --global --ignore-scripts --no-audit --no-fund @tauri-apps/cli@2.10.0
+      - name: Prepare updater configuration
+        env:
+          UPDATE_PUBLIC_KEY: ${{ vars.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          $version = (Get-Content app/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'app/tauri.conf.json version must be X.Y.Z.'
+          }
+          if (-not $env:UPDATE_PUBLIC_KEY) { throw 'Set the TAURI_SIGNING_PUBLIC_KEY repository variable.' }
+          @{
+            bundle = @{ createUpdaterArtifacts = $true }
+            plugins = @{ updater = @{
+              pubkey = $env:UPDATE_PUBLIC_KEY.Trim()
+              endpoints = @("https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json")
+            } }
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$env:RUNNER_TEMP/tauri-release.json"
+      - name: Build and sign the NSIS installer
+        working-directory: app
+        env:
+          MEMORY_LOG_GOOGLE_CLIENT_ID: ${{ vars.MEMORY_LOG_GOOGLE_CLIENT_ID }}
+          MEMORY_LOG_GOOGLE_CLIENT_SECRET: ${{ secrets.MEMORY_LOG_GOOGLE_CLIENT_SECRET }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:MEMORY_LOG_GOOGLE_CLIENT_ID -or -not $env:MEMORY_LOG_GOOGLE_CLIENT_SECRET) {
+            throw 'Configure the production Desktop OAuth client before building a public release.'
+          }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Set the TAURI_SIGNING_PRIVATE_KEY secret.' }
+          $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
+          tauri build --ci --features google-sync-release --config "$env:RUNNER_TEMP/tauri-release.json" -- --locked
+      - name: Create draft release with updater manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter '*-setup.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected one Windows NSIS installer.' }
+          $installer = $installers[0]
+          $signaturePath = "$($installer.FullName).sig"
+          $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+          if (-not $signature) { throw 'The installer signature is empty.' }
+          $tag = "${{ needs.check.outputs.tag }}"
+          $version = $tag.Substring(1)
+          $asset = "MemoryLog_${version}_x64-setup.exe"
+          $uploadPath = Join-Path $env:RUNNER_TEMP $asset
+          Copy-Item -LiteralPath $installer.FullName -Destination $uploadPath
+          Copy-Item -LiteralPath $signaturePath -Destination "$uploadPath.sig"
+          $manifest = "$env:RUNNER_TEMP/latest.json"
+          @{
+            version = $version
+            pub_date = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = @{ 'windows-x86_64' = @{
+              signature = $signature
+              url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$asset"
+            } }
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest
+          gh release create $tag $uploadPath "$uploadPath.sig" $manifest --target $env:GITHUB_SHA --generate-notes --title "Memory Log $tag"

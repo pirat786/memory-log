@@ -32,19 +32,28 @@
         <h1 id="pageTitle" tabindex="-1" data-i18n="view.day"></h1>
         <div class="actions">
           <span id="status" class="status" role="status"></span>
+          <button id="syncIndicator" class="small" type="button" data-i18n="sync.indicator" hidden></button>
+          <button id="updateIndicator" class="small" type="button" data-i18n="update.indicator" hidden></button>
           <button id="themeToggle" type="button" data-i18n="theme.toggle"></button>
           <button id="pause" data-i18n="btn.pause"></button>
           <button id="mark" class="primary" data-i18n="btn.mark"></button>
         </div>
       </header>
-      <div id="dateNav" class="date-nav">
-        <button id="prev" type="button" data-i18n-label="nav.prev">‹</button>
-        <button id="date" class="date-picker" type="button" aria-haspopup="dialog" data-i18n-title="calendar.title" data-i18n="nav.today"></button>
-        <button id="next" type="button" data-i18n-label="nav.next">›</button>
+      <div class="nav-row">
+        <div id="dateNav" class="date-nav">
+          <button id="prev" type="button" data-i18n-label="nav.prev">‹</button>
+          <button id="date" class="date-picker" type="button" aria-haspopup="dialog" data-i18n-title="calendar.title" data-i18n="nav.today"></button>
+          <button id="next" type="button" data-i18n-label="nav.next">›</button>
+        </div>
+        <select id="deviceScope" class="device-scope" data-i18n-label="sync.filter" hidden></select>
       </div>
       <div id="errorBox" class="error" role="alert" hidden></div>
 
       <div id="dayView" class="view" aria-labelledby="pageTitle">
+        <section id="allDevicesOverview" hidden aria-labelledby="allDevicesTitle">
+          <h2 id="allDevicesTitle" data-i18n="sync.all"></h2>
+          <div id="allDevicesRows"></div>
+        </section>
         <section class="hero" aria-labelledby="dayTrackTitle">
           <h2 id="dayTrackTitle" data-i18n="track.title"></h2>
           <div class="activity-total">
@@ -233,6 +242,38 @@
           <h2 id="categoryRulesTitle" data-i18n="category.rules"></h2>
           <div id="categoryRules"></div>
         </section>
+        <section class="settings-card" aria-labelledby="syncTitle">
+          <h2 id="syncTitle" tabindex="-1" data-i18n="sync.title"></h2>
+          <div id="syncStatus" class="muted" role="status"></div>
+          <progress id="syncProgress" class="sync-progress" aria-labelledby="syncTitle" hidden></progress>
+          <form id="syncSettings">
+            <fieldset id="syncFields" disabled>
+              <div class="setting-row">
+                <label for="syncDeviceName" data-i18n="sync.device_name"></label>
+                <input id="syncDeviceName" type="text" maxlength="64" required>
+              </div>
+              <div id="syncConnectFields">
+                <label class="setting-row">
+                  <span data-i18n="sync.history"></span><input id="syncHistory" type="checkbox">
+                </label>
+                <p class="muted small-text" data-i18n="sync.consent"></p>
+              </div>
+              <div class="sync-actions">
+                <button id="syncConnect" type="submit" class="primary" data-i18n="sync.connect"></button>
+                <button id="syncRename" type="submit" data-i18n="common.save" hidden></button>
+                <button id="syncNow" type="button" data-i18n="sync.now" hidden></button>
+                <button id="syncDisconnect" type="button" data-i18n="sync.disconnect" hidden></button>
+              </div>
+            </fieldset>
+          </form>
+          <div id="syncDevices" class="sync-devices"></div>
+        </section>
+        <section id="updateSettings" class="settings-card" aria-labelledby="updateTitle" hidden>
+          <h2 id="updateTitle" tabindex="-1" data-i18n="update.title"></h2>
+          <p id="updateStatus" class="muted" role="status"></p>
+          <button id="updateCheck" type="button" data-i18n="update.check"></button>
+          <button id="updateInstall" type="button" class="primary" data-i18n="update.install" hidden></button>
+        </section>
       </div>
     </main>
   </div>
@@ -295,6 +336,8 @@
 
   <script src="i18n.js"></script>
   <script src="controls.js"></script>
+  <script src="sync.js"></script>
+  <script src="updater.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

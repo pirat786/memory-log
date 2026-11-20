@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy policy · Memory Log</title>
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <main>
+    <a href="./">Memory Log</a>
+    <h1>Privacy policy</h1>
+    <h2>Local recording</h2>
+    <p>Memory Log stores a history of app use, window titles, active and idle time,
+      bookmarks, and recording settings in a local SQLite database. Depending on your
+      settings, it can also store clipboard history and system statistics on your PC.
+      You can pause recording, exclude apps, set a retention period, and delete local
+      history from the app's settings.</p>
+    <h2>Google Drive sync</h2>
+    <p>Sync is off by default. If you connect Google, Memory Log uses the
+      <code>drive.appdata</code> permission to read your Drive account identifier and
+      email address and to read and write its own hidden app data in your Google Drive.
+      It uses the identifier to distinguish accounts and shows your email in sync settings.
+      Windows Credential Manager holds the Google refresh token on the connected PC.</p>
+    <p>Synced records include your device name and generated identifier, window titles
+      and activity timestamps, bookmarks and their notes, and category rules. You can
+      choose whether to include activity recorded before you connected. Clipboard history
+      and system statistics stay local. Devices you connect to the same account can
+      read the synced data. Data travels over HTTPS. Memory Log applies no additional
+      encryption to the files it writes to Google Drive.</p>
+    <p>Memory Log uses Google user data to provide sync. It has no developer-operated
+      server that receives your Google Drive data. Memory Log does not sell or use
+      Google user data for advertising. Its use of information received from Google APIs
+      follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+      including the Limited Use requirements.</p>
+    <h2>Disconnecting and deleting data</h2>
+    <p>Disconnecting a PC stops sync on that PC, removes its local Google credential,
+      and removes local copies of history from other devices. It leaves existing files
+      in Drive. To remove the cloud copy, disconnect your linked PCs first and use
+      Google Drive's <strong>Settings → Manage apps</strong> to delete Memory Log's
+      hidden app data. You can revoke access from your
+      <a href="https://myaccount.google.com/connections">Google Account connections</a>.</p>
+    <h2>Updates</h2>
+    <p>Release builds connect to GitHub to check for new versions. Memory Log does not
+      send your activity history or Google account information in update requests.</p>
+    <h2>Contact</h2>
+    <p><a href="mailto:serezha.5300@gmail.com">Email the Memory Log developer</a> with privacy questions.</p>
+  </main>
+</body>
+</html>

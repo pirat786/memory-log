@@ -13,6 +13,8 @@ pub struct Sample {
     pub idle_secs: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ActivityEvent {
     Window(Sample),
     Break(Timestamp),

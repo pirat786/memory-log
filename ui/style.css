@@ -143,11 +143,13 @@ main { width: min(100%, 1240px); margin-inline: auto; padding: 24px clamp(16px, 
 .status.ok { color: var(--good); }
 .status.inactive { color: var(--idle); }
 .status.bad { color: var(--warn); }
+.nav-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+.nav-row:not(:has(> :not([hidden]))) { display: none; }
 .date-nav {
   display: inline-flex;
   align-items: center;
   min-height: 34px;
-  margin-top: 15px;
+
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--card);
@@ -158,6 +160,13 @@ main { width: min(100%, 1240px); margin-inline: auto; padding: 24px clamp(16px, 
 .date-nav button { min-height: 31px; min-width: 33px; padding: 0 5px 3px; border-color: transparent; background: transparent; font-size: 21px; line-height: 1; }
 .date-nav button:hover:not(:disabled) { border-color: transparent; background: var(--surface); }
 .date-nav .date-picker { min-width: 112px; padding: 3px 8px; font-size: 13px; }
+.device-scope { min-height: 34px; padding: 5px 11px; max-width: min(100%, 260px); font-size: 13px; }
+.device-overview { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 12px; }
+.device-overview .muted { font-size: 12px; }
+.sync-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sync-progress { display: block; width: 100%; height: 8px; margin: 8px 0 12px; accent-color: var(--accent); }
+.sync-devices { margin-top: 10px; }
+.device-id { display: block; font: 12px/1.5 Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
 .error { margin-top: 15px; padding: 10px 14px; border: 1px solid currentColor; border-radius: 10px; color: var(--warn); overflow-wrap: anywhere; }
 
 .view { display: grid; gap: 14px; margin-top: 18px; }

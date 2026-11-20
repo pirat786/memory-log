@@ -20,7 +20,8 @@ async function renderCalendar() {
   $("calendarMonth").textContent = month.toLocaleDateString(I18N.locale, { month: "long", year: "numeric" });
   $("calendarNext").disabled = iso(month).slice(0, 7) === iso(today).slice(0, 7);
   days.replaceChildren();
-  const recorded = new Set(await invoke("recorded_days", { month: iso(month) }));
+  const scope = currentDeviceScope();
+  const recorded = new Set(await invoke("recorded_days", { month: iso(month), device: scope === "local" ? null : scope }));
   if (request !== calendarRequest || !$("calendarDlg").open) return;
 
   for (let day = 1; day <= 7; day++) {
@@ -106,7 +107,7 @@ async function deletePeriod(form) {
 }
 
 function categoryButton(session) {
-  if (!session.app || session.app === HIDDEN_APP) return null;
+  if (!session.app || session.app === HIDDEN_APP || (session.device && session.device !== "local")) return null;
   const button = el("button", "small category-button", t("category.label"));
   button.type = "button";
   button.title = t("category.edit");

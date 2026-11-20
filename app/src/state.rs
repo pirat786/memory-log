@@ -11,10 +11,18 @@ use ml_core::model::{CategoryOverride, OverrideScope, RecordingSettings, Session
 use ml_core::privacy::HIDDEN_APP;
 use ml_core::{sessions, summary, time, Bookmark, Categorizer, Category, DayInput, DaySummary, Download, SearchHit, WeekDay};
 use ml_storage::Storage;
+use ml_storage::sync::{Device, PeerHit};
 use serde::Serialize;
 
 use crate::i18n;
 use crate::log;
+use crate::cloud::{self, SyncControl};
+
+#[derive(Serialize)]
+pub struct DeviceDay {
+    device: Device,
+    summary: DaySummary,
+}
 
 #[derive(Serialize)]
 pub struct Status {
@@ -35,6 +43,7 @@ pub struct ClipNav {
 pub struct AppState {
     pub storage: Mutex<Storage>,
     pub categorizer: Categorizer,
+    pub sync: SyncControl,
     paused: AtomicBool,
     pub inactive: AtomicBool,
     pub idle_minutes: AtomicU32,
@@ -109,9 +118,11 @@ impl AppState {
             log::info(&format!("база была повреждена, старый файл сохранён: {}", moved.display()));
         }
         let idle_minutes = storage.idle_minutes()?;
+        cloud::initialize(&storage)?;
         Ok(Self {
             storage: Mutex::new(storage),
             categorizer: Categorizer::with_defaults(),
+            sync: SyncControl::default(),
             paused: AtomicBool::new(false),
             inactive: AtomicBool::new(false),
             idle_minutes: AtomicU32::new(idle_minutes),
@@ -132,7 +143,7 @@ impl AppState {
         let Ok(mut storage) = self.storage.lock() else { return };
         // Windows не даёт переименовать файл, пока он открыт, поэтому сначала закрываем
         // старое соединение (подменяем его временной базой в памяти).
-        if let Ok(placeholder) = Storage::open_in_memory() {
+        if let Ok(placeholder) = Storage::open_in_memory().and_then(|st| { cloud::initialize(&st)?; Ok(st) }) {
             drop(std::mem::replace(&mut *storage, placeholder));
         }
         match Storage::open_or_recover(&self.db_path) {
@@ -140,7 +151,10 @@ impl AppState {
                 if let Some(moved) = moved {
                     log::info(&format!("база повреждена во время работы, старый файл: {}", moved.display()));
                 }
-                *storage = fresh;
+                match cloud::initialize(&fresh) {
+                    Ok(()) => *storage = fresh,
+                    Err(e) => log::info(&format!("не удалось подготовить базу синхронизации: {e}")),
+                }
             }
             Err(e) => log::info(&format!("не удалось восстановить базу: {e}")),
         }
@@ -249,6 +263,31 @@ impl AppState {
             .collect()
     }
 
+    pub fn synced_days(&self, date: &str, device: Option<&str>) -> Result<Vec<DeviceDay>, String> {
+        let date = parse_date(Some(date), &self.lang())?;
+        let (from, to) = time::day_bounds(date);
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let mut days = Vec::new();
+        for peer in st.sync_peers().map_err(|e| e.to_string())? {
+            if device.is_some_and(|id| id != peer.id) { continue; }
+            let e = |e: ml_storage::StorageError| e.to_string();
+            let events = st.peer_activity(&peer.id, from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS).map_err(e)?;
+            let (mut sessions, away_secs) = sessions::sessionize_with_away(&events, &self.categorizer, (from, to));
+            apply_overrides(&mut sessions, &st.peer_rules(&peer.id, from, to).map_err(e)?);
+            let day = summary::build(DayInput {
+                date: &date.to_string(), bounds: (from, to), sessions: &sessions, away_secs,
+                bookmarks: st.peer_bookmarks(&peer.id, from, to).map_err(e)?, system: &[], procs: &[],
+                downloads: Vec::new(), clips: Vec::new(), goals: &[],
+            });
+            days.push(DeviceDay { device: peer, summary: day });
+        }
+        Ok(days)
+    }
+
+    pub fn sync_search(&self, query: &str, device: Option<&str>) -> Result<Vec<PeerHit>, String> {
+        self.storage.lock().map_err(|e| e.to_string())?.search_peers(query, device, 100).map_err(|e| e.to_string())
+    }
+
     pub(crate) fn sessions_for_day(&self, st: &Storage, date: NaiveDate) -> ml_storage::Result<Vec<Session>> {
         let (from, to) = time::day_bounds(date);
         let events = st.activity_between(from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)?;
@@ -293,14 +332,21 @@ impl AppState {
             .map_err(|e| e.to_string())
     }
 
-    pub fn recorded_days(&self, month: &str) -> Result<Vec<String>, String> {
+    pub fn recorded_days(&self, month: &str, device: Option<&str>) -> Result<Vec<String>, String> {
         let mut date = parse_date(Some(month), &self.lang())?;
         let month = date.month();
         let st = self.storage.lock().map_err(|e| e.to_string())?;
         let mut days = Vec::new();
         while date.month() == month && date <= time::today() {
             let (from, to) = time::day_bounds(date);
-            if st.has_records(from, to).map_err(|e| e.to_string())? {
+            let has_records = match device {
+                Some("all") => st.has_records(from, to).and_then(|found| {
+                    if found { Ok(true) } else { st.has_peer_records(None, from, to) }
+                }),
+                Some(device) => st.has_peer_records(Some(device), from, to),
+                None => st.has_records(from, to),
+            };
+            if has_records.map_err(|e| e.to_string())? {
                 days.push(date.to_string());
             }
             date = date.checked_add_days(Days::new(1)).ok_or_else(|| "invalid calendar date".to_string())?;
