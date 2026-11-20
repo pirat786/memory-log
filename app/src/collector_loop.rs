@@ -68,19 +68,29 @@ pub fn spawn(state: Arc<AppState>) {
                     return Ok(());
                 }
                 let interactive = ml_collector::interactive_desktop();
+                let sample = if interactive { windows.sample().map(|s| privacy.apply(s)) } else { None };
                 let threshold = state.idle_minutes.load(Ordering::Relaxed) * 60;
-                let inactive = !interactive || ml_collector::idle_seconds().is_some_and(|secs| secs >= threshold);
+                let idle = interactive && sample.as_ref().map_or_else(
+                    || ml_collector::idle_seconds().unwrap_or_default(),
+                    |s| s.idle_secs,
+                ) >= threshold;
+                let ts = sample.as_ref().map_or_else(|| Utc::now().timestamp(), |s| s.ts);
+                let inactive = !interactive || idle;
                 state.inactive.store(inactive, Ordering::Relaxed);
-                if (inactive || interrupted) && !break_recorded {
-                    storage.insert_activity_break(Utc::now().timestamp()).map_err(|e| e.to_string())?;
+                if (!interactive || interrupted) && !break_recorded {
+                    storage.insert_activity_break(ts).map_err(|e| e.to_string())?;
                     break_recorded = true;
                 }
                 if !interactive {
                     last_window_app.clear();
                     return Ok(());
                 }
-                if let Some(sample) = windows.sample().map(|s| privacy.apply(s)) {
-                    if !inactive {
+                if idle {
+                    storage.insert_activity_idle(ts).map_err(|e| e.to_string())?;
+                    break_recorded = false;
+                }
+                if let Some(sample) = sample {
+                    if !idle {
                         storage.insert_sample(&sample).map_err(|e| e.to_string())?;
                         break_recorded = false;
                     }

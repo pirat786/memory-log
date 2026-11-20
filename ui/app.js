@@ -76,9 +76,10 @@ function cards(target, items, emptyText) {
   }
 }
 
-function renderRhythm(r) {
-  if (!r) return "";
+function renderRhythm(r, awaySecs) {
+  if (!r) return awaySecs >= 60 ? t("rhythm.away", { v: duration(awaySecs) }) : "";
   const parts = [t("rhythm.range", { from: clock(r.first_ts), to: clock(r.last_ts) })];
+  if (awaySecs >= 60) parts.push(t("rhythm.away", { v: duration(awaySecs) }));
   parts.push(r.breaks.length
     ? t("rhythm.breaks", { n: r.breaks.length, v: duration(r.break_secs) })
     : t("rhythm.nobreaks"));
@@ -137,8 +138,8 @@ function renderHealth(h) {
 }
 
 const HISTORY_LIMIT = 300;
-const HISTORY_MIN_SECS = 15;
 let timelineData = [];
+let historyBlocks = [];
 let clipData = [];
 let allHits = [];
 let tab = "windows";
@@ -281,13 +282,61 @@ function shortDuration(secs) {
   return secs < 60 ? `${secs} ${t("unit.sec")}` : duration(secs);
 }
 
-function historyRow(time, text, tail, button) {
-  const row = el("div", "item hist");
+function historyRow(time, text, tail, button, tag = "div") {
+  const row = el(tag, "item hist");
   const body = el("span", "tl-name", text.length > 300 ? text.slice(0, 300) + "…" : text);
   body.title = text;
   row.append(el("span", "tl-time", time), body);
   row.append(button ?? el("span", "muted", tail ?? ""));
   return row;
+}
+
+function windowRow(s) {
+  const app = appName(s.app);
+  const row = historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${app} — ${s.title}` : app, shortDuration(s.end - s.start));
+  row.dataset.category = s.category;
+  return row;
+}
+
+const BREAK_ROW_SECS = 5 * 60;
+
+function timelineWithMarks(openBlocks) {
+  const out = [];
+  let lastHour = null;
+  historyBlocks.forEach((b, i) => {
+    const hour = new Date(b.start * 1000).getHours();
+    if (hour !== lastHour) {
+      out.push(el("div", "hour-mark", `${String(hour).padStart(2, "0")}:00`));
+      lastHour = hour;
+    }
+    out.push(blockRow(b, openBlocks.has(String(b.start))));
+    const older = historyBlocks[i + 1];
+    if (older && b.start - older.end >= BREAK_ROW_SECS) {
+      out.push(el("div", "break-row", t("hist.break", { v: duration(b.start - older.end) })));
+    }
+  });
+  return out;
+}
+
+// Один блок ленты: программа, главное окно и «ещё N»; по щелчку раскрывается список всех окон блока.
+function blockRow(b, open) {
+  const main = b.titles[0]?.title ?? "";
+  let text = main ? `${appName(b.app)} — ${main}` : appName(b.app);
+  if (b.title_count > 1) text += ` ${t("hist.more_titles", { n: b.title_count - 1 })}`;
+  const expandable = b.title_count > 1;
+  const row = historyRow(`${clock(b.start)}–${clock(b.end)}`, text, shortDuration(b.active_secs), null, expandable ? "summary" : "div");
+  row.dataset.category = b.category;
+  row.title = categoryName(b.category);
+  if (!expandable) return row;
+
+  const titles = el("div", "block-titles");
+  for (const x of b.titles) titles.append(el("div", "detail", `${x.title || appName(b.app)} · ${shortDuration(x.secs)}`));
+  if (b.title_count > b.titles.length) titles.append(note(t("hist.more_hidden", { n: b.title_count - b.titles.length })));
+  const block = el("details", "history-block");
+  block.dataset.start = b.start;
+  block.open = open;
+  block.append(row, titles);
+  return block;
 }
 
 async function copyText(text, btn) {
@@ -332,6 +381,7 @@ function renderHistory() {
   if (tab === "bookmarks" || tab === "downloads") return;
   const q = $("q").value.trim().toLowerCase();
   const target = $("list");
+  const openBlocks = new Set([...target.querySelectorAll("details[open]")].map((block) => block.dataset.start));
   target.replaceChildren();
   $("clearClips").hidden = true;
   const range = tab === "windows" ? selectedRange : null;
@@ -345,10 +395,12 @@ function renderHistory() {
   let rows;
   let empty;
   if (tab === "windows") {
-    rows = timelineData
-      .filter((s) => range ? s.start < range.end && s.end > range.start : s.end - s.start >= HISTORY_MIN_SECS)
-      .filter((s) => matches(q, appName(s.app), s.title))
-      .map((s) => historyRow(`${clock(s.start)}–${clock(s.end)}`, s.title ? `${appName(s.app)} — ${s.title}` : appName(s.app), shortDuration(s.end - s.start)));
+    rows = range || q || !historyBlocks.length
+      ? timelineData
+        .filter((s) => !range || (s.start < range.end && s.end > range.start))
+        .filter((s) => matches(q, appName(s.app), s.title))
+        .map(windowRow)
+      : timelineWithMarks(openBlocks);
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
     clipRows = clipData.filter((c) => matches(q, appName(c.app), c.text));
@@ -441,15 +493,17 @@ async function render() {
   if (dayChanged) selectedRange = null;
   renderedDate = date;
   $("total").textContent = s.active_secs ? shortDuration(s.active_secs) : duration(0);
-  $("rhythm").textContent = renderRhythm(s.rhythm);
+  $("rhythm").textContent = renderRhythm(s.rhythm, s.away_secs);
 
   timelineData = s.timeline;
+  historyBlocks = s.history_blocks;
   clipData = s.clips;
   renderDayTrack(s, dayChanged);
   renderHistory();
 
   bars($("categories"), s.by_category.map((c) => ({ category: c.category, label: categoryName(c.category), secs: c.secs })));
   bars($("apps"), s.top_apps.map((a) => ({ label: appName(a.app), secs: a.secs })));
+  bars($("sites"), s.sites.map((x) => ({ label: x.site || t("sites.other"), secs: x.secs })));
   bars($("goals"), s.goals.map((g) => ({
     label: categoryName(g.category),
     secs: Math.min(g.used_mins, g.limit_mins) * 60,

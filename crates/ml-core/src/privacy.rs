@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn hides_sensitive_titles() {
         let f = PrivacyFilter::default();
-        let s = Sample { ts: 0, app: "chrome".into(), title: "Мой банк — вход".into() };
+        let s = Sample { ts: 0, app: "chrome".into(), title: "Мой банк — вход".into(), idle_secs: 0 };
         let out = f.apply(s);
         assert_eq!(out.app, HIDDEN_APP);
         assert!(out.title.is_empty());

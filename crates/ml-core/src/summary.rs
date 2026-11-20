@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::model::{Bookmark, Category, ClipEntry, Download, Goal, ProcSample, Session, SystemSample, Timestamp};
+use crate::sites;
 use crate::stats::{self, Health, LoadStats, NetStats, ProcLoad, Rhythm};
+use crate::timeline::{self, TimelineBlock};
 
 /// Минимальная длина «фокуса», чтобы попасть в сводку.
 pub const FOCUS_MIN_SECS: i64 = 20 * 60;
@@ -40,6 +42,8 @@ pub struct DayInput<'a> {
     pub date: &'a str,
     pub bounds: (Timestamp, Timestamp),
     pub sessions: &'a [Session],
+    /// Сколько секунд человека не было за компьютером (см. `sessions::sessionize_with_away`).
+    pub away_secs: i64,
     pub bookmarks: Vec<Bookmark>,
     pub system: &'a [SystemSample],
     pub procs: &'a [ProcSample],
@@ -54,11 +58,14 @@ pub struct DaySummary {
     pub day_start: Timestamp,
     pub day_end: Timestamp,
     pub active_secs: i64,
+    pub away_secs: i64,
     pub by_category: Vec<CategoryTime>,
     pub top_apps: Vec<AppTime>,
     pub focus_blocks: Vec<FocusBlock>,
-    /// Хронология дня: отрезки в одном окне, от новых к старым.
+    /// Точные отрезки шкалы и отфильтрованной истории, от новых к старым.
     pub timeline: Vec<Session>,
+    pub history_blocks: Vec<TimelineBlock>,
+    pub sites: Vec<SiteTime>,
     pub bookmarks: Vec<Bookmark>,
     pub rhythm: Option<Rhythm>,
     pub load: Option<LoadStats>,
@@ -102,10 +109,13 @@ pub fn build(input: DayInput) -> DaySummary {
         day_start: input.bounds.0,
         day_end: input.bounds.1,
         active_secs: sessions.iter().map(Session::secs).sum(),
+        away_secs: input.away_secs,
         by_category,
         top_apps,
         focus_blocks: focus_blocks(sessions),
         timeline: sessions.iter().rev().cloned().collect(),
+        history_blocks: timeline::build(sessions),
+        sites: site_times(sessions),
         bookmarks: input.bookmarks,
         rhythm: stats::rhythm(sessions),
         load: stats::load_stats(input.system),
@@ -116,6 +126,26 @@ pub fn build(input: DayInput) -> DaySummary {
         clips: input.clips.into_iter().rev().collect(),
         goals,
     }
+}
+
+/// Время на сайте. Пустое название — браузер, но сайт не узнан.
+#[derive(Debug, Clone, Serialize)]
+pub struct SiteTime {
+    pub site: String,
+    pub secs: i64,
+}
+
+fn site_times(sessions: &[Session]) -> Vec<SiteTime> {
+    let mut by_site: HashMap<&str, i64> = HashMap::new();
+    for s in sessions {
+        if let Some(site) = sites::site_of(&s.app, &s.title) {
+            *by_site.entry(site).or_default() += s.secs();
+        }
+    }
+    let mut out: Vec<SiteTime> = by_site.into_iter().map(|(site, secs)| SiteTime { site: site.to_string(), secs }).collect();
+    out.sort_by(|a, b| b.secs.cmp(&a.secs).then_with(|| a.site.cmp(&b.site)));
+    out.truncate(8);
+    out
 }
 
 /// Подряд идущие отрезки в одной программе (заголовок окна не важен).
@@ -178,6 +208,7 @@ mod tests {
             date: "2026-10-27",
             bounds: (0, 86400),
             sessions: &sessions,
+            away_secs: 120,
             bookmarks: vec![],
             system: &[],
             procs: &[],
@@ -186,12 +217,20 @@ mod tests {
             goals: &goals,
         });
         assert_eq!(s.active_secs, 1560);
+        assert_eq!(s.away_secs, 120);
         assert_eq!(s.top_apps[0].app, "winword");
         assert_eq!(s.focus_blocks.len(), 1);
         assert_eq!(s.focus_blocks[0].end, 1500);
         assert_eq!(s.goals[0].used_mins, 26);
         assert!(s.load.is_none());
+        // Два куска winword с разными заголовками склеиваются в один блок.
         assert_eq!(s.timeline.len(), 3);
         assert_eq!(s.timeline[0].app, "chrome");
+        assert_eq!(s.history_blocks.len(), 2);
+        assert_eq!(s.history_blocks[1].title_count, 2);
+        // «chrome» в тесте с заголовком «c» — браузер без известного сайта.
+        assert_eq!(s.sites.len(), 1);
+        assert_eq!(s.sites[0].site, "");
+        assert_eq!(s.sites[0].secs, 60);
     }
 }

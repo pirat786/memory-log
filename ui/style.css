@@ -311,6 +311,24 @@ section {
 .timeline { max-height: max(270px, calc(100vh - 300px)); overflow: auto; }
 .hist { display: grid; grid-template-columns: minmax(104px, max-content) minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding-inline: 8px; }
 .hist.selected { background: var(--accent-soft); border-radius: 7px; }
+.hist[data-category] { border-inline-start: 3px solid var(--category); }
+.hour-mark { padding: 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 650; }
+.break-row { padding: 5px 8px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.history-block summary { cursor: pointer; }
+.history-block summary:hover { background: var(--surface); }
+.history-block summary .tl-name::after {
+  content: "";
+  display: inline-block;
+  margin-inline-start: .55em;
+  width: .45em;
+  height: .45em;
+  border: solid currentColor;
+  border-width: 0 1px 1px 0;
+  transform: translateY(-.15em) rotate(45deg);
+}
+.history-block[open] summary .tl-name::after { transform: translateY(.02em) rotate(225deg); }
+.block-titles { padding: 0 8px 8px 20px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.detail { padding-block: 2px; }
 .tl-time { color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .hist .tl-name { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 8px 0; }

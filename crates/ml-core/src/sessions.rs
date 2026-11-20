@@ -1,36 +1,57 @@
 use crate::categorize::Categorizer;
 use crate::model::{ActivityEvent, Session, Timestamp};
 
-/// Если между снимками больше этого времени, считаем, что программа не работала.
-/// Снимки идут раз в 3 секунды, но Windows может притормаживать фоновую программу,
-/// поэтому запас большой: иначе каждая задержка «съедает» время.
+/// При более длинном промежутке считаем только обычную длительность первого снимка.
 pub const MAX_GAP_SECS: i64 = 90;
-/// Сколько длится последний снимок, у которого нет следующего.
 pub const TAIL_SECS: i64 = 3;
+/// Порог для старых записей, в которых сохранено только время без ввода.
+const LEGACY_IDLE_SECS: u32 = 60 * 60;
 
-/// Склеивает снимки в пределах дня. События должны быть отсортированы по времени.
 pub fn sessionize(
     events: &[ActivityEvent],
     categorizer: &Categorizer,
-    (from, to): (Timestamp, Timestamp),
+    bounds: (Timestamp, Timestamp),
 ) -> Vec<Session> {
+    sessionize_with_away(events, categorizer, bounds).0
+}
+
+/// Склеивает отсортированные снимки в пределах дня и считает подтверждённый простой.
+pub fn sessionize_with_away(
+    events: &[ActivityEvent],
+    categorizer: &Categorizer,
+    (from, to): (Timestamp, Timestamp),
+) -> (Vec<Session>, i64) {
     let mut out: Vec<Session> = Vec::new();
+    let mut away = 0;
     let mut can_merge = false;
     for (i, event) in events.iter().enumerate() {
-        let ActivityEvent::Window(s) = event else {
+        if matches!(event, ActivityEvent::Break(_)) {
             can_merge = false;
             continue;
-        };
-        let dur = match events.get(i + 1) {
-            Some(ActivityEvent::Break(ts)) => (ts - s.ts).min(TAIL_SECS),
-            Some(ActivityEvent::Window(next)) if next.ts - s.ts <= MAX_GAP_SECS => next.ts - s.ts,
+        }
+        let ts = event.timestamp();
+        let duration = match events.get(i + 1) {
+            Some(ActivityEvent::Break(end)) => (end - ts).min(TAIL_SECS),
+            Some(next) if next.timestamp() - ts <= MAX_GAP_SECS => next.timestamp() - ts,
             _ => TAIL_SECS,
         };
-        let start = s.ts.max(from);
-        let end = (s.ts + dur).min(to);
+        let start = ts.max(from);
+        let end = (ts + duration).min(to);
         if end <= start {
             continue;
         }
+        let s = match event {
+            ActivityEvent::Break(_) => continue,
+            ActivityEvent::Idle(_) => {
+                away += end - start;
+                continue;
+            }
+            ActivityEvent::Window(s) if s.idle_secs >= LEGACY_IDLE_SECS => {
+                away += end - start;
+                continue;
+            }
+            ActivityEvent::Window(s) => s,
+        };
         if let Some(last) = out.last_mut() {
             if can_merge && last.app == s.app && last.title == s.title && start == last.end {
                 last.end = end;
@@ -46,7 +67,7 @@ pub fn sessionize(
         });
         can_merge = true;
     }
-    out
+    (out, away)
 }
 
 #[cfg(test)]
@@ -55,7 +76,7 @@ mod tests {
     use crate::Sample;
 
     fn sample(ts: i64, app: &str, title: &str) -> ActivityEvent {
-        ActivityEvent::Window(Sample { ts, app: app.into(), title: title.into() })
+        ActivityEvent::Window(Sample { ts, app: app.into(), title: title.into(), idle_secs: 0 })
     }
 
     #[test]
@@ -106,5 +127,37 @@ mod tests {
         let s = sessionize(&events, &c, (0, 3600));
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].app, "b");
+    }
+
+    #[test]
+    fn idle_time_becomes_away_and_splits_the_session() {
+        let c = Categorizer::with_defaults();
+        let samples = vec![
+            sample(0, "winword", "t"),
+            sample(3, "winword", "t"),
+            ActivityEvent::Idle(6),
+            ActivityEvent::Idle(9),
+            sample(12, "winword", "t"),
+            sample(15, "winword", "t"),
+        ];
+        let (s, away) = sessionize_with_away(&samples, &c, (0, 3600));
+        assert_eq!(away, 6);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].start, s[0].end), (0, 6));
+        assert_eq!((s[1].start, s[1].end), (12, 18));
+    }
+
+    #[test]
+    fn historical_idle_respects_the_previous_one_hour_threshold() {
+        let c = Categorizer::with_defaults();
+        let events = [3599, 3600].map(|idle_secs| ActivityEvent::Window(Sample {
+            ts: (idle_secs as i64 - 3599) * TAIL_SECS,
+            app: "editor".into(),
+            title: "t".into(),
+            idle_secs,
+        }));
+        let (sessions, away) = sessionize_with_away(&events, &c, (1, 5));
+        assert_eq!(sessions.iter().map(Session::secs).sum::<i64>(), 2);
+        assert_eq!(away, 2);
     }
 }

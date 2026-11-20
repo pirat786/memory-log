@@ -9,11 +9,23 @@ pub struct Sample {
     pub ts: Timestamp,
     pub app: String,
     pub title: String,
+    /// Сколько секунд назад пользователь в последний раз трогал мышь или клавиатуру.
+    pub idle_secs: u32,
 }
 
 pub enum ActivityEvent {
     Window(Sample),
     Break(Timestamp),
+    Idle(Timestamp),
+}
+
+impl ActivityEvent {
+    pub fn timestamp(&self) -> Timestamp {
+        match self {
+            Self::Window(sample) => sample.ts,
+            Self::Break(ts) | Self::Idle(ts) => *ts,
+        }
+    }
 }
 
 /// Текст, скопированный в буфер обмена, и программа, из которой его скопировали.

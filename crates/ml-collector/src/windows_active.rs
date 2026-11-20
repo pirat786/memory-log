@@ -8,8 +8,8 @@ use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
 
 use crate::Collector;
 
@@ -54,6 +54,7 @@ impl Collector for ActiveWindowCollector {
             ts: chrono::Utc::now().timestamp(),
             app,
             title,
+            idle_secs: idle_seconds().unwrap_or_default(),
         })
     }
 }

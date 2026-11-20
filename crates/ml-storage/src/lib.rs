@@ -15,10 +15,16 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/004_drop_idle.sql"),
     include_str!("../migrations/005_clipboard.sql"),
     include_str!("../migrations/006_clipboard_unique.sql"),
-    include_str!("../migrations/007_reserved.sql"),
+    ADD_IDLE_SECONDS,
     include_str!("../migrations/008_activity.sql"),
+    // База 0.2.0 могла получить версию 8 без столбца idle_secs.
+    ADD_IDLE_SECONDS,
 ];
+const ADD_IDLE_SECONDS: &str = include_str!("../migrations/007_idle_secs.sql");
 const ACTIVITY_SCHEMA_VERSION: usize = 8;
+const IDLE_COMPAT_SCHEMA_VERSION: usize = 9;
+const BREAK_EVENT: u8 = 1;
+const IDLE_EVENT: u8 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -71,7 +77,7 @@ fn quarantine(path: &Path) -> Result<std::path::PathBuf> {
 }
 
 fn read_sample(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
-    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)? })
+    Ok(Sample { ts: r.get(0)?, app: r.get(1)?, title: r.get(2)?, idle_secs: r.get(3)? })
 }
 
 impl Storage {
@@ -126,7 +132,14 @@ impl Storage {
                     tx.execute("ALTER TABLE samples ADD COLUMN is_break INTEGER NOT NULL DEFAULT 0", [])?;
                 }
             }
-            tx.execute_batch(sql)?;
+            let needs_idle_compat = version != IDLE_COMPAT_SCHEMA_VERSION || !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('samples') WHERE name = 'idle_secs')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if needs_idle_compat {
+                tx.execute_batch(sql)?;
+            }
             tx.pragma_update(None, "user_version", version)?;
             tx.commit()?;
         }
@@ -135,27 +148,33 @@ impl Storage {
 
     pub fn insert_sample(&self, s: &Sample) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO samples (ts, app, title) VALUES (?1, ?2, ?3)",
-            params![s.ts, s.app, s.title],
+            "INSERT INTO samples (ts, app, title, idle_secs) VALUES (?1, ?2, ?3, ?4)",
+            params![s.ts, s.app, s.title, s.idle_secs],
         )?;
         Ok(())
     }
 
     pub fn insert_activity_break(&self, ts: Timestamp) -> Result<()> {
-        self.conn.execute("INSERT INTO samples (ts, app, title, is_break) VALUES (?1, '', '', 1)", [ts])?;
+        self.insert_activity_event(ts, BREAK_EVENT)
+    }
+
+    pub fn insert_activity_idle(&self, ts: Timestamp) -> Result<()> {
+        self.insert_activity_event(ts, IDLE_EVENT)
+    }
+
+    fn insert_activity_event(&self, ts: Timestamp, kind: u8) -> Result<()> {
+        self.conn.execute("INSERT INTO samples (ts, app, title, is_break) VALUES (?1, '', '', ?2)", params![ts, kind])?;
         Ok(())
     }
 
     pub fn activity_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<ActivityEvent>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT ts, app, title, is_break FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts, rowid")?;
-        let rows = stmt.query_map(params![from, to], |row| {
-            if row.get::<_, bool>(3)? {
-                Ok(ActivityEvent::Break(row.get(0)?))
-            } else {
-                Ok(ActivityEvent::Window(read_sample(row)?))
-            }
+            .prepare("SELECT ts, app, title, idle_secs, is_break FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts, rowid")?;
+        let rows = stmt.query_map(params![from, to], |row| match row.get::<_, u8>(4)? {
+            0 => Ok(ActivityEvent::Window(read_sample(row)?)),
+            IDLE_EVENT => Ok(ActivityEvent::Idle(row.get(0)?)),
+            _ => Ok(ActivityEvent::Break(row.get(0)?)),
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -171,7 +190,7 @@ impl Storage {
 
     pub fn last_sample(&self) -> Result<Option<Sample>> {
         let mut stmt = self.conn.prepare(
-            "SELECT ts, app, title FROM samples WHERE is_break = 0 ORDER BY ts DESC, rowid DESC LIMIT 1",
+            "SELECT ts, app, title, idle_secs FROM samples WHERE is_break = 0 ORDER BY ts DESC, rowid DESC LIMIT 1",
         )?;
         let mut rows = stmt.query_map([], read_sample)?;
         Ok(rows.next().transpose()?)
@@ -367,7 +386,7 @@ mod tests {
     use super::*;
 
     fn sample(ts: i64, app: &str, title: &str) -> Sample {
-        Sample { ts, app: app.into(), title: title.into() }
+        Sample { ts, app: app.into(), title: title.into(), idle_secs: 0 }
     }
 
     #[test]
@@ -404,8 +423,8 @@ mod tests {
     }
 
     #[test]
-    fn opens_both_shapes_of_schema_version_seven() {
-        for had_break_column in [false, true] {
+    fn opens_legacy_activity_schemas() {
+        for (version, had_break_column) in [(7, false), (7, true), (8, true)] {
             let conn = Connection::open_in_memory().unwrap();
             for sql in MIGRATIONS.iter().take(6) {
                 conn.execute_batch(sql).unwrap();
@@ -418,16 +437,20 @@ mod tests {
                 conn.execute("ALTER TABLE samples ADD COLUMN idle_secs INTEGER NOT NULL DEFAULT 0", []).unwrap();
             }
             conn.execute("INSERT INTO samples (ts, app, title) VALUES (10, 'editor', 'Document')", []).unwrap();
-            conn.pragma_update(None, "user_version", 7).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
 
             let storage = Storage::init(conn).unwrap();
             assert_eq!(storage.idle_minutes().unwrap(), if had_break_column { 11 } else { 5 });
             assert_eq!(storage.last_sample().unwrap().unwrap().app, "editor");
             storage.insert_activity_break(11).unwrap();
-            assert!(matches!(&storage.activity_between(0, 20).unwrap()[..], [ActivityEvent::Window(_), ActivityEvent::Break(11)]));
+            storage.insert_activity_idle(14).unwrap();
+            assert!(matches!(
+                &storage.activity_between(0, 20).unwrap()[..],
+                [ActivityEvent::Window(_), ActivityEvent::Break(11), ActivityEvent::Idle(14)]
+            ));
             assert_eq!(
                 storage.conn.pragma_query_value(None, "user_version", |r| r.get::<_, usize>(0)).unwrap(),
-                ACTIVITY_SCHEMA_VERSION,
+                IDLE_COMPAT_SCHEMA_VERSION,
             );
         }
     }
