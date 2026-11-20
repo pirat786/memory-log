@@ -179,11 +179,19 @@ main { width: min(100%, 1540px); margin-inline: auto; padding: 24px clamp(16px, 
 #liveProcMsg { margin-bottom: 8px; }
 #junkMsg:empty, #startupMsg:empty { display: none; }
 #junkMsg, #startupMsg { margin-bottom: 8px; }
-.junk-row { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.junk-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; cursor: pointer; }
+.junk-size { font-variant-numeric: tabular-nums; font-weight: 650; padding: 2px 8px; border-radius: 6px; background: var(--surface); white-space: nowrap; }
 .startup-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; cursor: pointer; }
 .startup-cmd { overflow-wrap: anywhere; }
 .port-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .port-badge { font: 12px/1.4 Consolas, monospace; padding: 2px 6px; border-radius: 6px; background: var(--surface); }
+.power-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.power-controls select { min-height: 32px; padding: 4px 10px; }
+#powerStatus:empty { display: none; }
+.clip-pinned { border-inline-start: 3px solid var(--accent); }
+.section-hidden { display: none !important; }
+.section-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+.section-toggle { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
 .sync-devices { margin-top: 10px; }
 .sync-device { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .device-id { display: block; font: 12px/1.5 Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
@@ -426,6 +434,37 @@ dialog input, dialog select { display: block; width: 100%; margin-block: 6px; }
 @media (min-width: 1280px) {
   .overview-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .system-grid > .wide { grid-column: auto; }
+}
+@media (min-width: 1680px) {
+  body { font-size: 15px; }
+  .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .sidebar { padding: 28px 16px; }
+  .brand { font-size: 18px; gap: 11px; }
+  .brand-mark { width: 34px; height: 34px; }
+  .views { gap: 6px; margin-top: 34px; }
+  .views button { min-height: 44px; gap: 12px; font-size: 15px; }
+  .nav-icon { width: 18px; height: 18px; }
+  main { width: min(100%, 1780px); padding: 28px clamp(20px, 3vw, 44px) 36px; }
+  h1 { font-size: 35px; }
+  h2 { font-size: 17px; }
+  section { padding: 21px 23px; }
+  button { min-height: 38px; padding: 7px 14px; }
+  button.small { min-height: 32px; padding: 5px 12px; font-size: 13px; }
+  .small-text, .muted.small-text { font-size: 13px; }
+  .live-procs { max-height: 300px; }
+}
+@media (min-width: 2200px) {
+  body { font-size: 16px; }
+  .app-shell { grid-template-columns: 244px minmax(0, 1fr); }
+  .brand { font-size: 20px; }
+  .brand-mark { width: 38px; height: 38px; }
+  .views button { min-height: 48px; font-size: 16px; }
+  .nav-icon { width: 20px; height: 20px; }
+  main { width: min(100%, 2080px); }
+  h1 { font-size: 38px; }
+  h2 { font-size: 18px; }
+  section { padding: 24px 26px; }
+  .live-procs { max-height: 340px; }
 }
 @media (max-width: 960px) {
   #settingsView { columns: 1; max-width: 690px; }

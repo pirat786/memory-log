@@ -38,6 +38,10 @@ fn main() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
+                    if shortcut.key == Code::Space {
+                        window::trigger_widget(app);
+                        return;
+                    }
                     let Some(state) = app.try_state::<Arc<AppState>>() else { return };
                     // Вниз по списку — к более старым записям, вверх — к новым.
                     let delta = if shortcut.key == Code::ArrowDown { 1 } else { -1 };
@@ -64,7 +68,7 @@ fn main() {
 
             // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
             let mods = Some(Modifiers::CONTROL | Modifiers::ALT);
-            for key in [Code::ArrowDown, Code::ArrowUp] {
+            for key in [Code::ArrowDown, Code::ArrowUp, Code::Space] {
                 if let Err(e) = app.global_shortcut().register(Shortcut::new(mods, key)) {
                     log::info(&format!("не удалось занять сочетание клавиш для листания буфера: {e}"));
                 }
@@ -119,6 +123,15 @@ fn main() {
             commands::startup_items,
             commands::set_startup_item,
             commands::listening_ports,
+            commands::reveal_path,
+            commands::power_status,
+            commands::set_keep_awake,
+            commands::set_power_rule,
+            commands::cancel_power_rule,
+            commands::toggle_widget,
+            commands::widget_open,
+            commands::widget_resize,
+            commands::open_main_window,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось собрать Memory Log")

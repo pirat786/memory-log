@@ -8,7 +8,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::state::{AppState, Status};
 use crate::cloud::{self, SyncStatus};
-use crate::sys_tools::{CleanResult, JunkCategory, ListeningPort, StartupItem};
+use crate::sys_tools::{CleanResult, JunkCategory, ListeningPort, PowerStatus, StartupItem};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -230,15 +230,15 @@ pub async fn kill_process(state: Shared<'_>, name: String) -> Result<usize, Stri
 }
 
 #[tauri::command]
-pub async fn scan_junk() -> Result<Vec<JunkCategory>, String> {
-    tauri::async_runtime::spawn_blocking(crate::sys_tools::scan_junk)
+pub async fn scan_junk(min_age_hours: u64) -> Result<Vec<JunkCategory>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sys_tools::scan_junk(min_age_hours))
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn clean_junk(ids: Vec<String>) -> Result<CleanResult, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::sys_tools::clean_junk(&ids))
+pub async fn clean_junk(ids: Vec<String>, min_age_hours: u64) -> Result<CleanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sys_tools::clean_junk(&ids, min_age_hours))
         .await
         .map_err(|e| e.to_string())
 }
@@ -266,4 +266,58 @@ pub async fn listening_ports(state: Shared<'_>) -> Result<Vec<ListeningPort>, St
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    crate::sys_tools::reveal_in_explorer(&path)
+}
+
+#[tauri::command]
+pub fn power_status(state: Shared) -> Result<PowerStatus, String> {
+    let guard = state.power_guard.lock().map_err(|e| e.to_string())?;
+    Ok(guard.status(chrono::Utc::now().timestamp()))
+}
+
+#[tauri::command]
+pub fn set_keep_awake(state: Shared, enabled: bool) -> Result<bool, String> {
+    let mut guard = state.power_guard.lock().map_err(|e| e.to_string())?;
+    ml_collector::set_keep_awake(enabled);
+    guard.keep_awake = enabled;
+    Ok(enabled)
+}
+
+#[tauri::command]
+pub fn set_power_rule(state: Shared, condition: String, action: String, delay_mins: u64) -> Result<PowerStatus, String> {
+    let mut guard = state.power_guard.lock().map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+    guard.set_rule(condition, action, delay_mins, now)?;
+    Ok(guard.status(now))
+}
+
+#[tauri::command]
+pub fn cancel_power_rule(state: Shared) -> Result<PowerStatus, String> {
+    let mut guard = state.power_guard.lock().map_err(|e| e.to_string())?;
+    guard.cancel_rule();
+    Ok(guard.status(chrono::Utc::now().timestamp()))
+}
+
+#[tauri::command]
+pub async fn toggle_widget(app: AppHandle) -> bool {
+    crate::window::toggle_widget(&app)
+}
+
+#[tauri::command]
+pub fn widget_open(app: AppHandle) -> bool {
+    app.get_webview_window("widget").is_some()
+}
+
+#[tauri::command]
+pub fn widget_resize(app: AppHandle, expanded: bool) {
+    crate::window::resize_widget(&app, expanded);
+}
+
+#[tauri::command]
+pub fn open_main_window(app: AppHandle) {
+    crate::window::show_main(&app);
 }

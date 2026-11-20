@@ -156,7 +156,18 @@ function renderLiveProcList() {
         $("liveProcMsg").textContent = key.startsWith("system.") ? t(key) : key;
       }
     };
-    row.append(el("strong", "live-proc-name", name), el("span", "muted live-proc-stats", stats), kill);
+    const actions = el("div", "btns");
+    if (p.exe) {
+      const open = el("button", "small", t("system.open_folder"));
+      open.type = "button";
+      open.onclick = async () => {
+        try { await invoke("reveal_path", { path: p.exe }); }
+        catch (err) { $("liveProcMsg").textContent = String(err).startsWith("system.") ? t(String(err)) : String(err); }
+      };
+      actions.append(open);
+    }
+    actions.append(kill);
+    row.append(el("strong", "live-proc-name", name), el("span", "muted live-proc-stats", stats), actions);
     return row;
   });
   target.replaceChildren(...(items.length ? items : [note(t("common.nodata"))]));
@@ -206,9 +217,9 @@ function renderJunkList() {
     const text = el("div");
     text.append(
       el("strong", "", t(`system.junk_${cat.id}`)),
-      el("div", "muted small-text", t("system.junk_meta", { size: bytes(cat.bytes), files: cat.files })),
+      el("div", "muted small-text", t("system.junk_files", { files: cat.files })),
     );
-    row.append(check, text);
+    row.append(check, text, el("span", "junk-size", bytes(cat.bytes)));
     return row;
   });
   target.replaceChildren(...rows);
@@ -217,14 +228,16 @@ function renderJunkList() {
 
 async function runJunkScan() {
   $("scanJunk").disabled = true;
+  $("junkAge").disabled = true;
   $("junkMsg").textContent = t("system.junk_scanning");
   try {
-    junkCategories = await invoke("scan_junk");
+    junkCategories = await invoke("scan_junk", { minAgeHours: Number($("junkAge").value) });
     const total = junkCategories.reduce((sum, c) => sum + c.bytes, 0);
     $("junkMsg").textContent = t("system.junk_found", { size: bytes(total) });
     renderJunkList();
   } finally {
     $("scanJunk").disabled = false;
+    $("junkAge").disabled = false;
   }
 }
 
@@ -234,18 +247,22 @@ async function runJunkClean() {
   if (!window.confirm(t("system.junk_confirm"))) return;
   $("cleanJunk").disabled = true;
   $("scanJunk").disabled = true;
+  $("junkAge").disabled = true;
+  $("junkMsg").textContent = t("system.junk_cleaning");
   try {
-    const res = await invoke("clean_junk", { ids });
+    const minAgeHours = Number($("junkAge").value);
+    const res = await invoke("clean_junk", { ids, minAgeHours });
     $("junkMsg").textContent = t("system.junk_done", {
       size: bytes(res.freed_bytes),
       deleted: res.deleted_files,
       skipped: res.skipped_files,
     });
-    junkCategories = await invoke("scan_junk");
+    junkCategories = await invoke("scan_junk", { minAgeHours });
     renderJunkList();
   } finally {
     $("cleanJunk").disabled = false;
     $("scanJunk").disabled = false;
+    $("junkAge").disabled = false;
   }
 }
 
@@ -275,7 +292,20 @@ async function refreshStartup() {
         toggle.disabled = false;
       }
     };
-    row.append(info, toggle);
+    const controls = el("div", "setting-actions");
+    if (item.source !== "Store") {
+      const open = el("button", "small", t("system.open_folder"));
+      open.type = "button";
+      open.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try { await invoke("reveal_path", { path: item.command }); }
+        catch (err) { $("startupMsg").textContent = String(err).startsWith("system.") ? t(String(err)) : String(err); }
+      };
+      controls.append(open);
+    }
+    controls.append(toggle);
+    row.append(info, controls);
     return row;
   }));
 }
@@ -300,6 +330,27 @@ function renderPortsList() {
 async function refreshPorts() {
   portsData = await invoke("listening_ports");
   renderPortsList();
+}
+
+async function refreshPowerStatus() {
+  const status = await invoke("power_status");
+  $("keepAwake").checked = status.keep_awake;
+  const active = status.rule;
+  $("powerCancel").hidden = !active;
+  $("powerApply").hidden = !!active;
+  $("powerCondition").disabled = !!active;
+  $("powerDelay").disabled = !!active;
+  $("powerAction").disabled = !!active;
+  if (active) {
+    $("powerStatus").textContent = t("system.power_active", {
+      cond: t(`system.cond_${active.condition === "net_idle" ? "net" : active.condition === "cpu_idle" ? "cpu" : "timer"}`),
+      act: t(`system.act_${active.action}`),
+      elapsed: duration(active.elapsed_secs),
+      total: duration(active.delay_secs),
+    });
+  } else {
+    $("powerStatus").textContent = status.keep_awake ? t("system.keep_awake_on") : "";
+  }
 }
 
 function renderNet(net) {
@@ -380,6 +431,7 @@ function setView(view) {
     if (!$("startupList").childElementCount) guarded(refreshStartup);
     if (!portsData.length) guarded(refreshPorts);
     if (!junkCategories.length) renderJunkList();
+    guarded(refreshPowerStatus);
   }
 }
 
@@ -720,12 +772,34 @@ function renderHistory() {
     }
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
-    clipRows = clipData.filter((c) => matches(q, appName(c.app), c.text));
+    let pinned = [];
+    try { pinned = JSON.parse(localStorage.getItem("pinnedClips") || "[]"); } catch {}
+    if (!Array.isArray(pinned)) pinned = [];
+    const pinnedSet = new Set(pinned.map((p) => p.text));
+    const savePinned = (next) => localStorage.setItem("pinnedClips", JSON.stringify(next));
+    const combined = [
+      ...pinned.map((c) => ({ ...c, pinned: true })),
+      ...clipData.filter((c) => !pinnedSet.has(c.text)).map((c) => ({ ...c, pinned: false })),
+    ];
+    clipRows = combined.filter((c) => matches(q, appName(c.app), c.text));
     clipSel = Math.min(clipSel, Math.max(clipRows.length - 1, 0));
     rows = clipRows.map((c, i) => {
       const buttons = el("span", "btns");
-      buttons.append(copyButton(c.text), deleteButton(c.text));
-      const row = historyRow(`${clock(c.ts)} · ${appName(c.app)}`, c.text, "", buttons);
+      const pinBtn = el("button", "small", t(c.pinned ? "clip.unpin" : "clip.pin"));
+      pinBtn.type = "button";
+      pinBtn.onclick = (e) => {
+        e.stopPropagation();
+        const next = c.pinned
+          ? pinned.filter((p) => p.text !== c.text)
+          : [{ text: c.text, app: c.app, ts: c.ts }, ...pinned];
+        savePinned(next);
+        renderHistory();
+      };
+      buttons.append(copyButton(c.text), pinBtn);
+      if (!c.pinned) buttons.append(deleteButton(c.text));
+      const meta = c.pinned ? `📌 ${t("clip.pinned")}` : `${clock(c.ts)} · ${appName(c.app)}`;
+      const row = historyRow(meta, c.text, "", buttons);
+      if (c.pinned) row.classList.add("clip-pinned");
       row.classList.toggle("selected", i === clipSel);
       row.onclick = () => { clipSel = i; renderHistory(); };
       return row;
@@ -1146,10 +1220,53 @@ $("lang").onchange = async (e) => {
   await Promise.all([renderComparison(), guarded(renderCategoryRules)]);
 };
 
+const TOGGLEABLE_SECTIONS = [
+  ["focus", "sec.focus"],
+  ["sites", "sec.sites"],
+  ["goals", "sec.goals"],
+  ["comparison", "compare.title"],
+  ["live_procs", "system.live_procs"],
+  ["junk", "system.junk_title"],
+  ["startup", "system.startup_title"],
+  ["ports", "system.ports_title"],
+  ["power", "system.power_title"],
+];
+
+function applyHiddenSections(hiddenSet) {
+  for (const [id] of TOGGLEABLE_SECTIONS) {
+    const elSection = document.querySelector(`[data-section="${id}"]`);
+    if (elSection) elSection.classList.toggle("section-hidden", hiddenSet.has(id));
+  }
+}
+
+function initSectionToggles() {
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem("hiddenSections") || "[]"); } catch {}
+  const hiddenSet = new Set(Array.isArray(saved) ? saved : []);
+  applyHiddenSections(hiddenSet);
+  $("sectionToggles").replaceChildren(...TOGGLEABLE_SECTIONS.map(([id, key]) => {
+    const row = el("label", "section-toggle");
+    const check = el("input");
+    check.type = "checkbox";
+    check.checked = !hiddenSet.has(id);
+    check.onchange = () => {
+      if (check.checked) hiddenSet.delete(id);
+      else hiddenSet.add(id);
+      localStorage.setItem("hiddenSections", JSON.stringify([...hiddenSet]));
+      applyHiddenSections(hiddenSet);
+    };
+    const label = el("span", "", t(key));
+    label.dataset.i18n = key;
+    row.append(check, label);
+    return row;
+  }));
+}
+
 async function start() {
   await I18N.init();
   fillLanguageControls();
   initExtraControls();
+  initSectionToggles();
   initSyncControls();
   const breakSelect = $("breakMinutes");
   breakSelect.value = localStorage.getItem("breakMinutes") || "0";
@@ -1170,8 +1287,40 @@ async function start() {
   $("refreshStartup").onclick = () => guarded(refreshStartup);
   $("refreshPorts").onclick = () => guarded(refreshPorts);
   $("portSearch").oninput = renderPortsList;
+  $("keepAwake").onchange = async () => {
+    await invoke("set_keep_awake", { enabled: $("keepAwake").checked });
+    await guarded(refreshPowerStatus);
+  };
+  $("powerApply").onclick = async () => {
+    await invoke("set_power_rule", {
+      condition: $("powerCondition").value,
+      action: $("powerAction").value,
+      delayMins: Number($("powerDelay").value),
+    });
+    await guarded(refreshPowerStatus);
+  };
+  $("powerCancel").onclick = async () => {
+    await invoke("cancel_power_rule");
+    await guarded(refreshPowerStatus);
+  };
+  guarded(async () => {
+    const open = await invoke("widget_open");
+    if (!open && localStorage.getItem("widgetEnabled") === "1") {
+      $("widgetToggle").checked = await invoke("toggle_widget");
+    } else {
+      $("widgetToggle").checked = open;
+    }
+  });
+  $("widgetToggle").onchange = async () => {
+    const open = await invoke("toggle_widget");
+    $("widgetToggle").checked = open;
+    localStorage.setItem("widgetEnabled", open ? "1" : "0");
+  };
   setInterval(() => {
-    if (activeView === "system" && !document.hidden) guarded(refreshLiveSystem);
+    if (activeView === "system" && !document.hidden) {
+      guarded(refreshLiveSystem);
+      guarded(refreshPowerStatus);
+    }
   }, 3000);
   void initAppUpdates();
   setTab("windows");
@@ -1208,3 +1357,34 @@ setInterval(() => {
     renderComparison();
   }
 }, 5 * 60_000);
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    for (const dlg of document.querySelectorAll("dialog[open]")) dlg.close();
+    return;
+  }
+  const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+  if (e.ctrlKey && !e.altKey && !e.shiftKey) {
+    const viewByNum = { "1": "day", "2": "history", "3": "system", "4": "settings" };
+    if (viewByNum[e.key]) {
+      e.preventDefault();
+      setView(viewByNum[e.key]);
+      return;
+    }
+    if (e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      setView("history");
+      setTimeout(() => $("q").focus(), 20);
+      return;
+    }
+  }
+  if (e.altKey && !e.ctrlKey && !inInput) {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      $("prev").click();
+    } else if (e.key === "ArrowRight" && !$("next").disabled) {
+      e.preventDefault();
+      $("next").click();
+    }
+  }
+});

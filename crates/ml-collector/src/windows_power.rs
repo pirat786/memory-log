@@ -1,7 +1,10 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 
-use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::Power::{
+    GetSystemPowerStatus, SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED,
+    ES_SYSTEM_REQUIRED, SYSTEM_POWER_STATUS,
+};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
@@ -38,5 +41,16 @@ pub fn disable_power_throttling() {
             &state as *const _ as *const c_void,
             size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
         );
+    }
+}
+
+pub fn set_keep_awake(enabled: bool) {
+    let flags = if enabled {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    unsafe {
+        let _ = SetThreadExecutionState(flags);
     }
 }

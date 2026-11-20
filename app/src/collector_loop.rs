@@ -126,6 +126,12 @@ pub fn spawn(state: Arc<AppState>) {
             if result.is_ok() && !state.is_paused() && last_system.elapsed() >= SYSTEM_TICK {
                 last_system = Instant::now();
                 let (sample, mut procs) = system.snapshot();
+                if let Ok(mut guard) = state.power_guard.lock() {
+                    if let Some(action) = guard.evaluate(sample.net_rx + sample.net_tx, sample.cpu_pct, sample.ts) {
+                        drop(guard);
+                        crate::sys_tools::execute_power_action(&action);
+                    }
+                }
                 result = state.storage.lock().map_err(|e| e.to_string()).and_then(|st| {
                     if state.is_paused() {
                         return Ok(());

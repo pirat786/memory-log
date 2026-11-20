@@ -94,16 +94,16 @@
             <h2 data-i18n="sec.apps"></h2>
             <div id="apps" class="bars"></div>
           </section>
-          <section>
+          <section data-section="focus">
             <h2 data-i18n="sec.focus"></h2>
             <div id="focus"></div>
           </section>
-          <section>
+          <section data-section="sites">
             <h2 data-i18n="sec.sites"></h2>
             <div id="sites" class="bars"></div>
             <div class="muted small-text" data-i18n="sites.note"></div>
           </section>
-          <section>
+          <section data-section="goals">
             <div class="card-heading">
               <h2 data-i18n="sec.goals"></h2>
               <button id="addGoal" class="small" data-i18n="goal.add"></button>
@@ -111,7 +111,7 @@
             <div id="goals"></div>
           </section>
         </div>
-        <section>
+        <section data-section="comparison">
           <h2 id="comparisonTitle" tabindex="-1" data-i18n="compare.title"></h2>
           <form id="workHours" class="setting-row compare-hours">
             <label><input id="workOnly" type="checkbox"> <span data-i18n="compare.work_only"></span></label>
@@ -187,7 +187,7 @@
             <h2 data-i18n="sec.procs"></h2>
             <div id="procs"></div>
           </section>
-          <section class="wide" aria-labelledby="liveProcsTitle">
+          <section class="wide" data-section="live_procs" aria-labelledby="liveProcsTitle">
             <div class="card-heading">
               <h2 id="liveProcsTitle" data-i18n="system.live_procs"></h2>
               <div class="live-proc-controls">
@@ -206,10 +206,15 @@
             <h2 data-i18n="sec.health"></h2>
             <div id="health"></div>
           </section>
-          <section class="wide" aria-labelledby="junkTitle">
+          <section class="wide" data-section="junk" aria-labelledby="junkTitle">
             <div class="card-heading">
               <h2 id="junkTitle" data-i18n="system.junk_title"></h2>
               <div class="live-proc-controls">
+                <select id="junkAge" data-i18n-label="system.junk_age">
+                  <option value="24" data-i18n="system.junk_age_24"></option>
+                  <option value="1" data-i18n="system.junk_age_1"></option>
+                  <option value="0" data-i18n="system.junk_age_0"></option>
+                </select>
                 <button id="scanJunk" class="small" type="button" data-i18n="system.junk_scan"></button>
                 <button id="cleanJunk" class="small danger" type="button" data-i18n="system.junk_clean" hidden></button>
               </div>
@@ -217,7 +222,7 @@
             <div id="junkMsg" class="muted small-text"></div>
             <div id="junkList"></div>
           </section>
-          <section aria-labelledby="startupTitle">
+          <section data-section="startup" aria-labelledby="startupTitle">
             <div class="card-heading">
               <h2 id="startupTitle" data-i18n="system.startup_title"></h2>
               <button id="refreshStartup" class="small" type="button" data-i18n="system.refresh"></button>
@@ -225,7 +230,7 @@
             <div id="startupMsg" class="muted small-text"></div>
             <div id="startupList" class="live-procs"></div>
           </section>
-          <section aria-labelledby="portsTitle">
+          <section data-section="ports" aria-labelledby="portsTitle">
             <div class="card-heading">
               <h2 id="portsTitle" data-i18n="system.ports_title"></h2>
               <div class="live-proc-controls">
@@ -234,6 +239,37 @@
               </div>
             </div>
             <div id="portsList" class="live-procs"></div>
+          </section>
+          <section class="wide" data-section="power" aria-labelledby="powerTitle">
+            <div class="card-heading">
+              <h2 id="powerTitle" data-i18n="system.power_title"></h2>
+              <label class="section-toggle">
+                <input id="keepAwake" type="checkbox">
+                <span data-i18n="system.keep_awake"></span>
+              </label>
+            </div>
+            <p class="muted small-text" data-i18n="system.power_note"></p>
+            <div class="power-controls">
+              <select id="powerCondition" data-i18n-label="system.power_cond">
+                <option value="net_idle" data-i18n="system.cond_net"></option>
+                <option value="cpu_idle" data-i18n="system.cond_cpu"></option>
+                <option value="timer" data-i18n="system.cond_timer"></option>
+              </select>
+              <select id="powerDelay" data-i18n-label="system.power_delay">
+                <option value="2" data-i18n="system.delay_2"></option>
+                <option value="5" data-i18n="system.delay_5"></option>
+                <option value="15" data-i18n="system.delay_15"></option>
+                <option value="30" data-i18n="system.delay_30"></option>
+                <option value="60" data-i18n="system.delay_60"></option>
+              </select>
+              <select id="powerAction" data-i18n-label="system.power_act">
+                <option value="sleep" data-i18n="system.act_sleep"></option>
+                <option value="shutdown" data-i18n="system.act_shutdown"></option>
+              </select>
+              <button id="powerApply" class="small" type="button" data-i18n="system.power_start"></button>
+              <button id="powerCancel" class="small danger" type="button" data-i18n="system.power_cancel" hidden></button>
+            </div>
+            <div id="powerStatus" class="muted small-text"></div>
           </section>
         </div>
       </div>
@@ -267,6 +303,10 @@
               <option value="90" data-i18n="break.90"></option>
             </select>
           </div>
+          <label class="setting-row">
+            <span data-i18n="widget.label"></span>
+            <input id="widgetToggle" type="checkbox">
+          </label>
         </section>
         <section class="settings-card" aria-labelledby="recordingTitle">
           <h2 id="recordingTitle" data-i18n="settings.recording"></h2>
@@ -334,6 +374,11 @@
             </fieldset>
           </form>
           <div id="syncDevices" class="sync-devices"></div>
+        </section>
+        <section class="settings-card" aria-labelledby="sectionsTitle">
+          <h2 id="sectionsTitle" data-i18n="settings.sections"></h2>
+          <p class="muted small-text" data-i18n="settings.sections_note"></p>
+          <div id="sectionToggles" class="section-toggles"></div>
         </section>
         <section id="updateSettings" class="settings-card" aria-labelledby="updateTitle" hidden>
           <h2 id="updateTitle" tabindex="-1" data-i18n="update.title"></h2>

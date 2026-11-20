@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Memory Log Widget</title>
+  <script src="theme.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: light-dark(rgba(255, 255, 255, .96), rgba(22, 28, 43, .96));
+      --surface: light-dark(#f0f3fa, #212a40);
+      --text: light-dark(#1a2340, #eff2fb);
+      --muted: light-dark(#56637f, #a7b3ce);
+      --accent: #6669e4;
+      --good: #76d9a9;
+      --line: light-dark(#dce2f0, #34415e);
+    }
+    * { box-sizing: border-box; user-select: none; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      color: var(--text);
+      font: 13px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    }
+    .edge-tab {
+      width: 14px;
+      height: 64px;
+      margin: 2px 0 2px 2px;
+      border-radius: 10px 0 0 10px;
+      border: 1px solid rgba(102, 105, 228, .7);
+      border-right: 0;
+      background: linear-gradient(180deg, rgba(102, 105, 228, .9), rgba(34, 41, 68, .95));
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      position: relative;
+    }
+    .edge-grip { width: 3px; height: 24px; border-radius: 2px; background: rgba(255, 255, 255, .85); }
+    .edge-dot {
+      position: absolute;
+      bottom: 6px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--good);
+    }
+    .edge-dot.awake { background: #fbbf24; }
+    .panel {
+      width: calc(100% - 8px);
+      height: calc(100% - 8px);
+      margin: 4px;
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .38);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+    }
+    [hidden] { display: none !important; }
+    .head { display: flex; align-items: center; justify-content: space-between; }
+    .head strong { font-size: 13px; }
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+    .seg {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 3px;
+      border-radius: 10px;
+      background: var(--surface);
+    }
+    .seg button {
+      padding: 5px 4px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--muted);
+      font: 600 11.5px/1.2 inherit;
+      cursor: pointer;
+    }
+    .seg button.active {
+      background: var(--bg);
+      color: var(--text);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
+    }
+    .tab-pane { display: grid; gap: 8px; align-content: start; min-height: 0; }
+    .conv-input {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      user-select: text;
+      outline: none;
+    }
+    .conv-input:focus { border-color: var(--accent); }
+    .chips { display: flex; gap: 5px; }
+    .chip {
+      flex: 1;
+      padding: 4px 4px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      font: 600 11px/1.2 inherit;
+      cursor: pointer;
+      text-align: center;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--text); }
+    .conv-list { overflow-y: auto; max-height: 112px; display: grid; gap: 4px; align-content: start; }
+    .conv-item {
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: var(--surface);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .conv-item:hover { outline: 1px solid var(--accent); }
+    .conv-item span { color: var(--muted); font-weight: 400; }
+    .conv-empty { color: var(--muted); font-size: 12px; padding: 2px; }
+    .timer-display {
+      text-align: center;
+      font: 700 32px/1.1 "Segoe UI Variable Display", system-ui, sans-serif;
+      font-variant-numeric: tabular-nums;
+      padding: 10px 0 4px;
+    }
+    .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .act {
+      padding: 9px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      font: 600 12px/1.2 inherit;
+      cursor: pointer;
+      text-align: center;
+    }
+    .act:hover { border-color: var(--accent); }
+    .act.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .span2 { grid-column: 1 / -1; }
+    .timer-row { display: flex; align-items: center; gap: 6px; }
+    .timer-row input, .timer-row select {
+      padding: 6px 8px;
+      border-radius: 9px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+    .timer-row input { width: 64px; text-align: center; user-select: text; }
+    .timer-row select { flex: 1; min-width: 0; }
+  </style>
+</head>
+<body>
+  <div id="edgeTab" class="edge-tab" title="Наведи или Ctrl+Alt+Space">
+    <div class="edge-grip"></div>
+    <span id="dot" class="edge-dot"></span>
+  </div>
+
+  <div id="panel" class="panel" hidden>
+    <div class="head">
+      <strong>Memory Log</strong>
+      <button id="collapse" class="icon-btn" type="button" title="Свернуть (Esc)">×</button>
+    </div>
+
+    <div class="seg">
+      <button type="button" data-wt="conv" class="active">Конвертер</button>
+      <button type="button" data-wt="timer">Таймер</button>
+      <button type="button" data-wt="ctrl">Пульт</button>
+    </div>
+
+    <div id="pane-conv" class="tab-pane">
+      <input id="conv" class="conv-input" type="text" autocomplete="off" spellcheck="false" placeholder="Число или выражение (1500, 1000+15%)">
+      <div class="chips">
+        <button class="chip" type="button" data-pair="мб|гб">МБ ↔ ГБ</button>
+        <button class="chip" type="button" data-pair="мин|ч">мин ↔ ч</button>
+        <button class="chip" type="button" data-pair="c|f">°C ↔ °F</button>
+        <button class="chip" type="button" data-tpl="+15%">+15%</button>
+      </div>
+      <div id="convList" class="conv-list">
+        <div class="conv-empty">Введи число — сразу появятся варианты перевода.</div>
+      </div>
+    </div>
+
+    <div id="pane-timer" class="tab-pane" hidden>
+      <div id="timerClock" class="timer-display">25:00</div>
+      <div class="grid3">
+        <button class="act" type="button" data-mins="5">5 мин</button>
+        <button class="act" type="button" data-mins="15">15 мин</button>
+        <button class="act" type="button" data-mins="25">25 мин</button>
+      </div>
+      <div class="timer-row">
+        <input id="timerMins" type="number" min="1" max="180" value="25" title="Своё время (мин)">
+        <select id="timerSound" title="Звук таймера">
+          <option value="bell">Колокольчик</option>
+          <option value="beep">Двойной сигнал</option>
+          <option value="soft">Мягкий тон</option>
+          <option value="none">Без звука</option>
+        </select>
+      </div>
+      <div class="grid2">
+        <button id="timerToggle" class="act" type="button">Старт</button>
+        <button id="timerReset" class="act" type="button">Сброс</button>
+      </div>
+    </div>
+
+    <div id="pane-ctrl" class="tab-pane" hidden>
+      <div class="grid2">
+        <button id="btnAwake" class="act" type="button">Не спать</button>
+        <button id="btnPause" class="act" type="button">Пауза</button>
+        <button id="btnPass" class="act span2" type="button">Сгенерировать пароль (в буфер)</button>
+        <button id="btnOpen" class="act span2" type="button">Открыть Memory Log</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+    const $ = (id) => document.getElementById(id);
+
+    let expanded = false;
+    let hoverTimer = null;
+    let leaveTimer = null;
+
+    async function setExpanded(next) {
+      clearTimeout(hoverTimer);
+      clearTimeout(leaveTimer);
+      if (expanded === next) return;
+      expanded = next;
+      $("edgeTab").hidden = expanded;
+      $("panel").hidden = !expanded;
+      await invoke("widget_resize", { expanded });
+      if (expanded) {
+        refreshState();
+        if (!$("pane-conv").hidden) setTimeout(() => $("conv").focus(), 40);
+      }
+    }
+
+    $("edgeTab").addEventListener("mouseenter", () => {
+      hoverTimer = setTimeout(() => setExpanded(true), 120);
+    });
+    $("edgeTab").addEventListener("mouseleave", () => clearTimeout(hoverTimer));
+    $("edgeTab").addEventListener("click", () => setExpanded(true));
+
+    $("panel").addEventListener("mouseenter", () => clearTimeout(leaveTimer));
+    $("panel").addEventListener("mouseleave", () => {
+      if (document.activeElement === $("conv") || document.activeElement === $("timerMins")) return;
+      leaveTimer = setTimeout(() => setExpanded(false), 450);
+    });
+    $("collapse").onclick = () => setExpanded(false);
+
+    listen("widget-toggle", () => setExpanded(!expanded));
+    listen("widget-expand", () => setExpanded(true));
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setExpanded(false);
+    });
+
+    for (const btn of document.querySelectorAll(".seg button")) {
+      btn.onclick = () => {
+        for (const b of document.querySelectorAll(".seg button")) b.classList.toggle("active", b === btn);
+        for (const id of ["conv", "timer", "ctrl"]) $("pane-" + id).hidden = btn.dataset.wt !== id;
+        if (btn.dataset.wt === "conv") $("conv").focus();
+      };
+    }
+
+    function buildSuggestions(raw) {
+      const s = raw.trim().toLowerCase().replace(/,/g, ".");
+      if (!s) return [];
+      const plain = s.match(/^-?\d+(?:\.\d+)?$/);
+      if (plain) {
+        const v = parseFloat(plain[0]);
+        return [
+          { val: `${+(v / 1024).toFixed(4)} ГБ`, hint: `${v} МБ` },
+          { val: `${+(v * 1024).toFixed(2)} МБ`, hint: `${v} ГБ` },
+          { val: `${+(v / 60).toFixed(2)} ч`, hint: `${v} мин` },
+          { val: `${+(v * 60).toFixed(2)} мин`, hint: `${v} ч` },
+          { val: `${+(v * 9 / 5 + 32).toFixed(1)} °F`, hint: `${v} °C` },
+        ];
+      }
+      const m = s.match(/^(-?\d+(?:\.\d+)?)\s*([a-zа-я°]+)\s+(?:в|to|in)\s+([a-zа-я°]+)$/);
+      if (m) {
+        const val = parseFloat(m[1]);
+        const from = m[2], to = m[3];
+        const sizeMap = { b: 1, б: 1, kb: 1024, кб: 1024, mb: 1024 ** 2, мб: 1024 ** 2, gb: 1024 ** 3, гб: 1024 ** 3 };
+        const timeMap = { s: 1, с: 1, m: 60, м: 60, min: 60, мин: 60, h: 3600, ч: 3600 };
+        if (sizeMap[from] && sizeMap[to]) return [{ val: `${+(val * sizeMap[from] / sizeMap[to]).toFixed(4)} ${to}`, hint: "копировать" }];
+        if (timeMap[from] && timeMap[to]) return [{ val: `${+(val * timeMap[from] / timeMap[to]).toFixed(4)} ${to}`, hint: "копировать" }];
+        if ((from === "c" || from === "°c" || from === "с") && (to === "f" || to === "°f")) return [{ val: `${+(val * 9 / 5 + 32).toFixed(2)} °F`, hint: "копировать" }];
+        if ((from === "f" || from === "°f") && (to === "c" || to === "°c" || to === "с")) return [{ val: `${+((val - 32) * 5 / 9).toFixed(2)} °C`, hint: "копировать" }];
+      }
+      const pctExpr = s.replace(/(\d+(?:\.\d+)?)\s*([+\-])\s*(\d+(?:\.\d+)?)%/g, "($1 $2 ($1 * $3 / 100))");
+      if (/^[0-9+\-*/().\s]+$/.test(pctExpr)) {
+        try {
+          const out = Function(`"use strict"; return (${pctExpr});`)();
+          if (typeof out === "number" && Number.isFinite(out)) return [{ val: String(+out.toFixed(6)), hint: "копировать" }];
+        } catch {}
+      }
+      return [];
+    }
+
+    function renderSuggestions() {
+      const items = buildSuggestions($("conv").value);
+      const list = $("convList");
+      if (!items.length) {
+        const msg = $("conv").value.trim() ? "Не распознано" : "Введи число — сразу появятся варианты перевода.";
+        list.innerHTML = `<div class="conv-empty">${msg}</div>`;
+        return;
+      }
+      list.replaceChildren(...items.map((item) => {
+        const row = document.createElement("div");
+        row.className = "conv-item";
+        row.textContent = `= ${item.val}`;
+        const hint = document.createElement("span");
+        hint.textContent = item.hint;
+        row.append(hint);
+        row.onclick = async () => {
+          await navigator.clipboard.writeText(item.val);
+          hint.textContent = "скопировано!";
+        };
+        return row;
+      }));
+    }
+
+    $("conv").oninput = renderSuggestions;
+
+    for (const chip of document.querySelectorAll(".chip")) {
+      chip.onclick = () => {
+        const input = $("conv");
+        const numMatch = input.value.trim().match(/^-?\d+(?:[.,]\d+)?/);
+        const base = numMatch ? numMatch[0] : "100";
+        if (chip.dataset.pair) {
+          const [a, b] = chip.dataset.pair.split("|");
+          const cur = input.value.trim().toLowerCase();
+          const forward = `${base} ${a} в ${b}`;
+          input.value = cur === forward ? `${base} ${b} в ${a}` : forward;
+        } else {
+          input.value = `${base}${chip.dataset.tpl}`;
+        }
+        renderSuggestions();
+        input.focus();
+      };
+    }
+
+    let timerSecs = 25 * 60;
+    let timerInit = 25 * 60;
+    let timerRunning = false;
+    $("timerSound").value = localStorage.getItem("timerSound") || "bell";
+
+    function playTimerSound(kind = $("timerSound").value) {
+      if (kind === "none") return;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const tone = (freq, start, dur, type = "sine", gainVal = 0.22) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+          gain.gain.setValueAtTime(0.001, ctx.currentTime + start);
+          gain.gain.exponentialRampToValueAtTime(gainVal, ctx.currentTime + start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + start);
+          osc.stop(ctx.currentTime + start + dur + 0.02);
+        };
+        if (kind === "bell") {
+          tone(880, 0, 0.35, "sine", 0.2);
+          tone(1320, 0.14, 0.45, "sine", 0.18);
+        } else if (kind === "beep") {
+          tone(740, 0, 0.14, "triangle", 0.22);
+          tone(740, 0.2, 0.14, "triangle", 0.22);
+        } else if (kind === "soft") {
+          tone(528, 0, 0.65, "sine", 0.18);
+        }
+      } catch {}
+    }
+
+    $("timerSound").onchange = () => {
+      localStorage.setItem("timerSound", $("timerSound").value);
+      playTimerSound($("timerSound").value);
+    };
+
+    function drawTimer() {
+      const m = String(Math.floor(timerSecs / 60)).padStart(2, "0");
+      const s = String(timerSecs % 60).padStart(2, "0");
+      $("timerClock").textContent = `${m}:${s}`;
+      $("timerToggle").textContent = timerRunning ? "Пауза" : "Старт";
+      $("timerToggle").classList.toggle("on", timerRunning);
+    }
+    drawTimer();
+
+    setInterval(() => {
+      if (!timerRunning) return;
+      if (timerSecs > 0) {
+        timerSecs -= 1;
+        drawTimer();
+      } else {
+        timerRunning = false;
+        drawTimer();
+        playTimerSound();
+        setExpanded(true);
+        document.querySelector('[data-wt="timer"]').click();
+        $("timerClock").textContent = "Готово!";
+      }
+    }, 1000);
+    for (const btn of document.querySelectorAll("[data-mins]")) {
+      btn.onclick = () => {
+        const mins = Number(btn.dataset.mins);
+        $("timerMins").value = String(mins);
+        timerInit = mins * 60;
+        timerSecs = timerInit;
+        timerRunning = true;
+        drawTimer();
+      };
+    }
+    $("timerMins").onchange = () => {
+      const mins = Math.max(1, Math.min(180, Math.round(Number($("timerMins").value) || 1)));
+      $("timerMins").value = String(mins);
+      timerInit = mins * 60;
+      timerSecs = timerInit;
+      timerRunning = false;
+      drawTimer();
+    };
+    $("timerToggle").onclick = () => {
+      if (timerSecs === 0) timerSecs = timerInit;
+      timerRunning = !timerRunning;
+      drawTimer();
+    };
+    $("timerReset").onclick = () => { timerRunning = false; timerSecs = timerInit; drawTimer(); };
+
+    async function refreshState() {
+      try {
+        const [power, status] = await Promise.all([invoke("power_status"), invoke("status")]);
+        $("btnAwake").classList.toggle("on", power.keep_awake);
+        $("dot").classList.toggle("awake", power.keep_awake);
+        $("btnPause").classList.toggle("on", status.paused);
+        $("btnPause").textContent = status.paused ? "Продолжить" : "Пауза записи";
+      } catch {}
+    }
+
+    $("btnAwake").onclick = async () => {
+      await invoke("set_keep_awake", { enabled: !$("btnAwake").classList.contains("on") });
+      await refreshState();
+    };
+    $("btnPause").onclick = async () => {
+      await invoke("set_paused", { paused: !$("btnPause").classList.contains("on") });
+      await refreshState();
+    };
+    $("btnPass").onclick = async () => {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*";
+      const arr = new Uint32Array(16);
+      crypto.getRandomValues(arr);
+      const pwd = Array.from(arr, (n) => chars[n % chars.length]).join("");
+      await navigator.clipboard.writeText(pwd);
+      $("btnPass").textContent = "Скопировано в буфер!";
+      setTimeout(() => { $("btnPass").textContent = "Сгенерировать пароль (в буфер)"; }, 1500);
+    };
+    $("btnOpen").onclick = () => invoke("open_main_window");
+
+    refreshState();
+    setInterval(refreshState, 5000);
+  </script>
+</body>
+</html>

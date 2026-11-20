@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
@@ -36,6 +37,105 @@ pub struct ListeningPort {
     pub process: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivePowerRule {
+    pub condition: String,
+    pub action: String,
+    pub delay_secs: u64,
+    pub elapsed_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PowerStatus {
+    pub keep_awake: bool,
+    pub rule: Option<ActivePowerRule>,
+}
+
+#[derive(Default)]
+pub struct PowerGuard {
+    pub keep_awake: bool,
+    condition: Option<String>,
+    action: Option<String>,
+    delay_secs: u64,
+    started_at: i64,
+    low_since: Option<i64>,
+}
+
+impl PowerGuard {
+    pub fn set_rule(&mut self, condition: String, action: String, delay_mins: u64, now: i64) -> Result<(), String> {
+        if !matches!(condition.as_str(), "net_idle" | "cpu_idle" | "timer") {
+            return Err("Invalid power condition".into());
+        }
+        if !matches!(action.as_str(), "sleep" | "shutdown") {
+            return Err("Invalid power action".into());
+        }
+        self.condition = Some(condition);
+        self.action = Some(action);
+        self.delay_secs = delay_mins.max(1) * 60;
+        self.started_at = now;
+        self.low_since = None;
+        Ok(())
+    }
+
+    pub fn cancel_rule(&mut self) {
+        self.condition = None;
+        self.action = None;
+        self.low_since = None;
+    }
+
+    pub fn status(&self, now: i64) -> PowerStatus {
+        let rule = match (self.condition.as_ref(), self.action.as_ref()) {
+            (Some(condition), Some(action)) => {
+                let elapsed_secs = match condition.as_str() {
+                    "timer" => now.saturating_sub(self.started_at) as u64,
+                    _ => self.low_since.map(|since| now.saturating_sub(since) as u64).unwrap_or(0),
+                };
+                Some(ActivePowerRule {
+                    condition: condition.clone(),
+                    action: action.clone(),
+                    delay_secs: self.delay_secs,
+                    elapsed_secs: elapsed_secs.min(self.delay_secs),
+                })
+            }
+            _ => None,
+        };
+        PowerStatus { keep_awake: self.keep_awake, rule }
+    }
+
+    pub fn evaluate(&mut self, net_bytes_10s: u64, cpu_pct: f32, now: i64) -> Option<String> {
+        let condition = self.condition.as_deref()?;
+        let triggered = match condition {
+            "net_idle" => {
+                if net_bytes_10s < 100 * 1024 * 10 {
+                    let since = *self.low_since.get_or_insert(now);
+                    now.saturating_sub(since) as u64 >= self.delay_secs
+                } else {
+                    self.low_since = None;
+                    false
+                }
+            }
+            "cpu_idle" => {
+                if cpu_pct < 10.0 {
+                    let since = *self.low_since.get_or_insert(now);
+                    now.saturating_sub(since) as u64 >= self.delay_secs
+                } else {
+                    self.low_since = None;
+                    false
+                }
+            }
+            "timer" => now.saturating_sub(self.started_at) as u64 >= self.delay_secs,
+            _ => false,
+        };
+        if triggered {
+            let action = self.action.take();
+            self.cancel_rule();
+            action
+        } else {
+            None
+        }
+    }
+}
+
 enum Target {
     Dir(PathBuf),
     MatchingFiles { dir: PathBuf, prefixes: &'static [&'static str], suffix: &'static str },
@@ -67,7 +167,7 @@ fn junk_targets(id: &str) -> Vec<Target> {
     }
 }
 
-fn walk_dir(dir: &Path, on_file: &mut impl FnMut(&Path, u64)) {
+fn walk_dir(dir: &Path, cutoff: Option<SystemTime>, on_file: &mut impl FnMut(&Path, u64)) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -76,8 +176,13 @@ fn walk_dir(dir: &Path, on_file: &mut impl FnMut(&Path, u64)) {
             continue;
         }
         if meta.is_dir() {
-            walk_dir(&path, on_file);
+            walk_dir(&path, cutoff, on_file);
         } else if meta.is_file() {
+            if let Some(limit) = cutoff {
+                if meta.modified().ok().is_some_and(|t| t > limit) {
+                    continue;
+                }
+            }
             on_file(&path, meta.len());
         }
     }
@@ -95,9 +200,9 @@ fn remove_empty_subdirs(dir: &Path) {
     }
 }
 
-fn for_each_target_file(target: &Target, on_file: &mut impl FnMut(&Path, u64)) {
+fn for_each_target_file(target: &Target, cutoff: Option<SystemTime>, on_file: &mut impl FnMut(&Path, u64)) {
     match target {
-        Target::Dir(dir) => walk_dir(dir, on_file),
+        Target::Dir(dir) => walk_dir(dir, cutoff, on_file),
         Target::MatchingFiles { dir, prefixes, suffix } => {
             let Ok(entries) = fs::read_dir(dir) else { return };
             for entry in entries.flatten() {
@@ -116,14 +221,21 @@ fn for_each_target_file(target: &Target, on_file: &mut impl FnMut(&Path, u64)) {
     }
 }
 
-pub fn scan_junk() -> Vec<JunkCategory> {
+fn temp_cutoff(id: &str, min_age_hours: u64) -> Option<SystemTime> {
+    (id == "temp" && min_age_hours > 0)
+        .then(|| SystemTime::now().checked_sub(Duration::from_secs(min_age_hours.saturating_mul(3600))))
+        .flatten()
+}
+
+pub fn scan_junk(min_age_hours: u64) -> Vec<JunkCategory> {
     ["temp", "caches", "dumps"]
         .into_iter()
         .map(|id| {
             let mut bytes = 0u64;
             let mut files = 0u64;
+            let cutoff = temp_cutoff(id, min_age_hours);
             for target in junk_targets(id) {
-                for_each_target_file(&target, &mut |_, len| {
+                for_each_target_file(&target, cutoff, &mut |_, len| {
                     bytes += len;
                     files += 1;
                 });
@@ -133,11 +245,12 @@ pub fn scan_junk() -> Vec<JunkCategory> {
         .collect()
 }
 
-pub fn clean_junk(ids: &[String]) -> CleanResult {
+pub fn clean_junk(ids: &[String], min_age_hours: u64) -> CleanResult {
     let mut result = CleanResult { freed_bytes: 0, deleted_files: 0, skipped_files: 0 };
     for id in ids {
+        let cutoff = temp_cutoff(id, min_age_hours);
         for target in junk_targets(id) {
-            for_each_target_file(&target, &mut |path, len| {
+            for_each_target_file(&target, cutoff, &mut |path, len| {
                 if fs::remove_file(path).is_ok() {
                     result.freed_bytes += len;
                     result.deleted_files += 1;
@@ -473,6 +586,55 @@ mod win {
         out.sort_by_key(|p| (p.port, p.proto.clone(), p.pid));
         Ok(out)
     }
+
+    fn extract_file_path(raw: &str) -> Option<std::path::PathBuf> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let candidate = if let Some(rest) = trimmed.strip_prefix('"') {
+            rest.split('"').next().unwrap_or("")
+        } else if std::path::Path::new(trimmed).exists() {
+            trimmed
+        } else {
+            let lower = trimmed.to_ascii_lowercase();
+            if let Some(idx) = lower.find(".exe").or_else(|| lower.find(".lnk")) {
+                &trimmed[..idx + 4]
+            } else {
+                trimmed.split_whitespace().next().unwrap_or("")
+            }
+        };
+        let path = std::path::PathBuf::from(candidate.trim());
+        path.exists().then_some(path)
+    }
+
+    pub fn reveal_in_explorer(target: &str) -> Result<(), String> {
+        let path = extract_file_path(target).ok_or_else(|| "system.path_not_found".to_string())?;
+        Command::new("explorer.exe")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn execute_power_action(action: &str) {
+        match action {
+            "sleep" => {
+                let _ = Command::new("rundll32.exe")
+                    .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn();
+            }
+            "shutdown" => {
+                let _ = Command::new("shutdown.exe")
+                    .args(["/s", "/t", "30"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn();
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -481,6 +643,8 @@ mod win {
     pub fn startup_items() -> Result<Vec<StartupItem>, String> { Ok(Vec::new()) }
     pub fn set_startup_item(_: &str, _: bool) -> Result<(), String> { Err("Windows only".into()) }
     pub fn listening_ports(_: &std::collections::HashMap<u32, String>) -> Result<Vec<ListeningPort>, String> { Ok(Vec::new()) }
+    pub fn reveal_in_explorer(_: &str) -> Result<(), String> { Err("Windows only".into()) }
+    pub fn execute_power_action(_: &str) {}
 }
 
-pub use win::{listening_ports, set_startup_item, startup_items};
+pub use win::{execute_power_action, listening_ports, reveal_in_explorer, set_startup_item, startup_items};

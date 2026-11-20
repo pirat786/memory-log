@@ -11,12 +11,19 @@ pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
     let lang = state.lang();
     let item = |id: &str, key: &str| MenuItem::with_id(app, id, i18n::t(&lang, key), true, None::<&str>);
     let open = item("open", "tray.open")?;
+    let widget = item("widget", "tray.widget")?;
     let mark = item("mark", "tray.mark")?;
     let pause = item("pause", "tray.pause")?;
     let quit = item("quit", "tray.quit")?;
-    let menu = Menu::with_items(app, &[&open, &mark, &pause, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &widget, &mark, &pause, &quit])?;
     if let Ok(mut items) = state.tray_items.lock() {
-        items.extend([("tray.open", open), ("tray.mark", mark), ("tray.pause", pause), ("tray.quit", quit)]);
+        items.extend([
+            ("tray.open", open),
+            ("tray.widget", widget),
+            ("tray.mark", mark),
+            ("tray.pause", pause),
+            ("tray.quit", quit),
+        ]);
     }
 
     let mut builder = TrayIconBuilder::new().menu(&menu).tooltip("Memory Log");
@@ -26,6 +33,9 @@ pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
     builder
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => crate::window::show_main(app),
+            "widget" => {
+                crate::window::toggle_widget(app);
+            }
             "mark" => {
                 let _ = state.add_bookmark("");
             }

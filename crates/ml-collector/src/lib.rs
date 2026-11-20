@@ -95,3 +95,11 @@ pub fn disable_power_throttling() {
 
 #[cfg(not(windows))]
 pub fn disable_power_throttling() {}
+
+#[cfg(windows)]
+pub fn set_keep_awake(enabled: bool) {
+    windows_power::set_keep_awake(enabled);
+}
+
+#[cfg(not(windows))]
+pub fn set_keep_awake(_enabled: bool) {}

@@ -117,6 +117,7 @@ pub struct LiveProc {
     pub count: usize,
     pub cpu_pct: f32,
     pub mem_mb: u32,
+    pub exe: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,23 +160,29 @@ impl LiveSystemProbe {
         self.disks.refresh();
 
         let cores = self.sys.cpus().len().max(1);
-        let mut agg: HashMap<String, (usize, f32, u64)> = HashMap::new();
+        let mut agg: HashMap<String, (usize, f32, u64, String)> = HashMap::new();
         for p in self.sys.processes().values() {
             let name = p.name().to_string_lossy().trim_end_matches(".exe").to_string();
             if name == "System Idle Process" {
                 continue;
             }
-            let entry = agg.entry(name).or_insert((0, 0.0, 0));
+            let entry = agg.entry(name).or_insert_with(|| (0, 0.0, 0, String::new()));
             entry.0 += 1;
             entry.1 += p.cpu_usage() / cores as f32;
             entry.2 += p.memory();
+            if entry.3.is_empty() {
+                if let Some(exe) = p.exe() {
+                    entry.3 = exe.display().to_string();
+                }
+            }
         }
         let mut processes: Vec<LiveProc> = agg.into_iter()
-            .map(|(name, (count, cpu_pct, mem))| LiveProc {
+            .map(|(name, (count, cpu_pct, mem, exe))| LiveProc {
                 name,
                 count,
                 cpu_pct,
                 mem_mb: (mem / (1024 * 1024)) as u32,
+                exe,
             })
             .collect();
         processes.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct).then_with(|| b.mem_mb.cmp(&a.mem_mb)));

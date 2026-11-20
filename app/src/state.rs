@@ -18,6 +18,7 @@ use serde::Serialize;
 use crate::i18n;
 use crate::log;
 use crate::cloud::{self, SyncControl};
+use crate::sys_tools::PowerGuard;
 
 #[derive(Serialize)]
 pub struct DeviceDay {
@@ -60,6 +61,7 @@ pub struct AppState {
     /// Пункты меню трея: при смене языка их подписи обновляются.
     pub tray_items: Mutex<Vec<(&'static str, tauri::menu::MenuItem<tauri::Wry>)>>,
     pub live_system: Mutex<Option<LiveSystemProbe>>,
+    pub power_guard: Mutex<PowerGuard>,
 }
 
 fn parse_date(date: Option<&str>, lang: &str) -> Result<NaiveDate, String> {
@@ -137,6 +139,7 @@ impl AppState {
             language: Mutex::new(initial_language(db_path)),
             tray_items: Mutex::new(Vec::new()),
             live_system: Mutex::new(None),
+            power_guard: Mutex::new(PowerGuard::default()),
         })
     }
 
