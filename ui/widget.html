@@ -538,12 +538,36 @@
       }
     }
 
+    function restoreSelect(id, key, fallback) {
+      const el = $(id);
+      const saved = localStorage.getItem(key);
+      if (saved && [...el.options].some((o) => o.value === saved)) {
+        el.value = saved;
+      } else {
+        el.value = fallback;
+      }
+    }
+
     function syncDropControls() {
       const m = $("dropMode").value;
       $("dropZipMode").hidden = m !== "zip";
       $("dropMaxDim").hidden = m === "zip" || m === "strip";
     }
-    $("dropMode").onchange = syncDropControls;
+
+    restoreSelect("dropMode", "widgetDropMode", "auto");
+    restoreSelect("dropMaxDim", "widgetDropMaxDim", "1920");
+    restoreSelect("dropZipMode", "widgetDropZipMode", "fast");
+
+    $("dropMode").onchange = () => {
+      localStorage.setItem("widgetDropMode", $("dropMode").value);
+      syncDropControls();
+    };
+    $("dropMaxDim").onchange = () => {
+      localStorage.setItem("widgetDropMaxDim", $("dropMaxDim").value);
+    };
+    $("dropZipMode").onchange = () => {
+      localStorage.setItem("widgetDropZipMode", $("dropZipMode").value);
+    };
     syncDropControls();
 
     listen("quick-drop-progress", (e) => {

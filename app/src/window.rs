@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::log;
+use crate::state::AppState;
 
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --in-process-gpu --renderer-process-limit=1";
 
@@ -39,10 +42,9 @@ fn dock_right_edge(w: &WebviewWindow, width: f64, height: f64) {
     let _ = w.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
-pub fn toggle_widget(app: &AppHandle) -> bool {
-    if let Some(w) = app.get_webview_window("widget") {
-        let _ = w.close();
-        return false;
+pub fn open_widget(app: &AppHandle) -> bool {
+    if app.get_webview_window("widget").is_some() {
+        return true;
     }
     match WebviewWindowBuilder::new(app, "widget", WebviewUrl::App("widget.html".into()))
         .title("Memory Log Widget")
@@ -66,6 +68,20 @@ pub fn toggle_widget(app: &AppHandle) -> bool {
             false
         }
     }
+}
+
+pub fn toggle_widget(app: &AppHandle) -> bool {
+    let open = if let Some(w) = app.get_webview_window("widget") {
+        let _ = w.close();
+        false
+    } else {
+        open_widget(app)
+    };
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        state.set_widget_enabled(open);
+    }
+    let _ = app.emit("widget-state", open);
+    open
 }
 
 pub fn trigger_widget(app: &AppHandle) {

@@ -65,7 +65,11 @@ fn main() {
             collector_loop::spawn(state.clone());
             cloud::spawn(state.clone());
             tray::build(app, state.clone())?;
+            let restore_widget = state.widget_enabled();
             app.manage(state);
+            if restore_widget {
+                window::open_widget(app.handle());
+            }
 
             // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
             let mods = Some(Modifiers::CONTROL | Modifiers::ALT);

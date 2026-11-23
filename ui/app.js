@@ -1306,6 +1306,7 @@ async function start() {
   guarded(async () => {
     const open = await invoke("widget_open");
     if (!open && localStorage.getItem("widgetEnabled") === "1") {
+      localStorage.removeItem("widgetEnabled");
       $("widgetToggle").checked = await invoke("toggle_widget");
     } else {
       $("widgetToggle").checked = open;
@@ -1314,8 +1315,11 @@ async function start() {
   $("widgetToggle").onchange = async () => {
     const open = await invoke("toggle_widget");
     $("widgetToggle").checked = open;
-    localStorage.setItem("widgetEnabled", open ? "1" : "0");
+    localStorage.removeItem("widgetEnabled");
   };
+  window.__TAURI__?.event?.listen("widget-state", (e) => {
+    $("widgetToggle").checked = Boolean(e.payload);
+  });
   setInterval(() => {
     if (activeView === "system" && !document.hidden) {
       guarded(refreshLiveSystem);

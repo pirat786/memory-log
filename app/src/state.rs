@@ -84,6 +84,10 @@ fn language_file(db_path: &Path) -> PathBuf {
     db_path.with_file_name("language.txt")
 }
 
+fn widget_file(db_path: &Path) -> PathBuf {
+    db_path.with_file_name("widget.txt")
+}
+
 fn initial_language(db_path: &Path) -> String {
     fs::read_to_string(language_file(db_path))
         .ok()
@@ -105,6 +109,18 @@ impl AppState {
         *self.language.lock().map_err(|e| e.to_string())? = code.to_string();
         self.relabel_tray();
         Ok(())
+    }
+
+    pub fn widget_enabled(&self) -> bool {
+        fs::read_to_string(widget_file(&self.db_path))
+            .ok()
+            .is_some_and(|s| s.trim() == "1")
+    }
+
+    pub fn set_widget_enabled(&self, enabled: bool) {
+        if let Err(e) = fs::write(widget_file(&self.db_path), if enabled { "1" } else { "0" }) {
+            log::info(&format!("не удалось сохранить состояние виджета: {e}"));
+        }
     }
 
     /// Подписи пунктов трея на текущем языке.
