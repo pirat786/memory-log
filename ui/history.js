@@ -302,6 +302,59 @@ function renderHistory() {
     }
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
+    const dlg = $("clipImageDlg");
+    const dlgImg = $("clipImageFull");
+    if (dlg && !dlg.dataset.bound) {
+      dlg.dataset.bound = "1";
+      $("clipImageClose").onclick = () => dlg.close();
+      dlg.onclick = (e) => { if (e.target === dlg) dlg.close(); };
+      dlg.addEventListener("close", () => { dlgImg.src = ""; });
+    }
+    const visibleImages = clipImages.filter((img) => matches(q, appName(img.app), `${img.width}x${img.height}`));
+    const imageGrid = visibleImages.length ? el("div", "clip-images-grid") : null;
+    if (imageGrid) {
+      for (const img of visibleImages) {
+        const card = el("div", "clip-img-card");
+        const thumb = document.createElement("img");
+        thumb.className = "clip-thumb";
+        thumb.src = img.thumb_url;
+        thumb.loading = "lazy";
+        thumb.onclick = async () => {
+          const full = await invoke("clip_image_preview", { id: img.id });
+          if (!full) return;
+          $("clipImageMeta").textContent = `${clock(img.ts)} · ${appName(img.app)} · ${img.width}×${img.height} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`;
+          dlgImg.src = full;
+          dlg.showModal();
+        };
+        const meta = el("div", "clip-img-meta", `${clock(img.ts)} · ${appName(img.app)} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`);
+        const copyBtn = el("button", "small", t("clip.copy"));
+        copyBtn.type = "button";
+        copyBtn.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            await invoke("copy_clip_image", { id: img.id });
+            copyBtn.textContent = t("clip.copied");
+          } catch {
+            copyBtn.textContent = t("clip.failed");
+          }
+          setTimeout(() => (copyBtn.textContent = t("clip.copy")), 1500);
+        };
+        const delBtn = el("button", "small", t("clip.delete"));
+        delBtn.type = "button";
+        delBtn.title = t("clip.delete_title");
+        delBtn.onclick = async (e) => {
+          e.stopPropagation();
+          await invoke("delete_clip_image", { id: img.id });
+          clipImages = clipImages.filter((x) => x.id !== img.id);
+          renderHistory();
+        };
+        const actions = el("div", "clip-img-actions");
+        actions.append(copyBtn, delBtn);
+        card.append(thumb, meta, actions);
+        imageGrid.append(card);
+      }
+    }
+
     let pinned = [];
     try { pinned = JSON.parse(localStorage.getItem("pinnedClips") || "[]"); } catch {}
     if (!Array.isArray(pinned)) pinned = [];
@@ -334,6 +387,7 @@ function renderHistory() {
       row.onclick = () => { clipSel = i; renderHistory(); };
       return row;
     });
+    if (imageGrid) rows = [imageGrid, ...rows];
     $("tabNote").textContent = clipHint();
     $("clearClips").hidden = false;
     empty = q ? t("hist.empty.day_q") : t("hist.empty.clips");

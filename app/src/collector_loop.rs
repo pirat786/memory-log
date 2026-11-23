@@ -4,10 +4,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use ml_collector::{ClipboardWatcher, SystemCollector};
+use ml_collector::{ClipboardContent, ClipboardWatcher, SystemCollector};
 use ml_core::privacy::{looks_like_secret, HIDDEN_APP};
 use ml_core::{ClipEntry, PrivacyFilter};
 
+use crate::clip_images;
 use crate::log;
 use crate::state::AppState;
 
@@ -119,10 +120,34 @@ pub fn spawn(state: Arc<AppState>) {
                     let app = capture.owner_app.unwrap_or_else(|| last_window_app.clone());
                     let source = privacy.apply(ml_core::Sample { ts, app, title: String::new(), idle_secs: 0 });
                     if known_source && last_window_app != HIDDEN_APP && source.app != HIDDEN_APP
-                        && !settings.excludes(&source.app) && !looks_like_secret(&capture.text)
+                        && !settings.excludes(&source.app)
                     {
-                        let entry = ClipEntry { ts, app: source.app, text: capture.text };
-                        storage.insert_clip(&entry).map_err(|e| e.to_string())?;
+                        match capture.content {
+                            ClipboardContent::Text(text) => {
+                                if !looks_like_secret(&text) {
+                                    let entry = ClipEntry { ts, app: source.app, text };
+                                    storage.insert_clip(&entry).map_err(|e| e.to_string())?;
+                                }
+                            }
+                            ClipboardContent::Image(img) => {
+                                drop(storage);
+                                if let Ok(c) = clip_images::compress_rgba(img.width, img.height, img.rgba) {
+                                    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+                                    storage
+                                        .insert_clip_image(
+                                            ts,
+                                            &source.app,
+                                            c.width,
+                                            c.height,
+                                            c.mime,
+                                            &c.thumb,
+                                            &c.data,
+                                            &c.sha256,
+                                        )
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(())

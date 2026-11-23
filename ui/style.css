@@ -502,3 +502,67 @@ dialog input, dialog select { display: block; width: 100%; margin-block: 6px; }
 @media (max-width: 430px) {
   .views .nav-icon { display: none; }
 }
+
+.clip-images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.clip-img-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(128, 128, 128, 0.25));
+  background: var(--card, rgba(128, 128, 128, 0.06));
+}
+.clip-thumb {
+  width: 100%;
+  height: 92px;
+  object-fit: cover;
+  border-radius: 5px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.12);
+}
+.clip-img-meta {
+  font-size: 11px;
+  color: var(--muted, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.clip-img-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+dialog.clip-image-dlg {
+  width: fit-content;
+  max-width: 92vw;
+  max-height: 90vh;
+  padding: 12px;
+  overflow: hidden;
+}
+dialog.clip-image-dlg[open] {
+  display: flex;
+  flex-direction: column;
+}
+.clip-image-dlg-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+#clipImageFull {
+  max-width: calc(92vw - 24px);
+  max-height: calc(90vh - 64px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  border-radius: 6px;
+}

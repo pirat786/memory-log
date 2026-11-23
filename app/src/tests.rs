@@ -598,6 +598,54 @@ mod sys_tools {
     }
 }
 
+mod clip_images_tests {
+    use ml_storage::Storage;
+
+    #[test]
+    fn compresses_1080p_screenshot_into_small_blob_and_thumb() {
+        let w = 1920u32;
+        let h = 1080u32;
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i] = ((x * 255) / w) as u8;
+                rgba[i + 1] = ((y * 255) / h) as u8;
+                rgba[i + 2] = 120;
+                rgba[i + 3] = 255;
+            }
+        }
+        let c = crate::clip_images::compress_rgba(w, h, rgba).unwrap();
+        assert_eq!(c.width, 1600);
+        assert_eq!(c.height, 900);
+        assert!(c.thumb.len() < 10_000, "thumb too large: {}", c.thumb.len());
+        assert!(c.data.len() < 150_000, "data too large: {}", c.data.len());
+
+        let (dw, dh, decoded) = crate::clip_images::decode_to_rgba(&c.data).unwrap();
+        assert_eq!((dw, dh), (1600, 900));
+        assert_eq!(decoded.len(), (dw * dh * 4) as usize);
+
+        let st = Storage::open_in_memory().unwrap();
+        st.insert_clip_image(100, "snippingtool", c.width, c.height, c.mime, &c.thumb, &c.data, &c.sha256)
+            .unwrap();
+        // Duplicate sha256 updates ts without creating a second row
+        st.insert_clip_image(200, "chrome", c.width, c.height, c.mime, &c.thumb, &c.data, &c.sha256)
+            .unwrap();
+
+        let list = st.clip_images_between(0, 300).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].ts, 200);
+        assert_eq!(list[0].app, "chrome");
+        assert_eq!(list[0].size_bytes, c.data.len() as u64);
+
+        let full = st.clip_image_data(list[0].id).unwrap().unwrap();
+        assert_eq!(full.1.len(), c.data.len());
+
+        st.delete_clip_image(list[0].id).unwrap();
+        assert!(st.clip_images_between(0, 300).unwrap().is_empty());
+    }
+}
+
 mod perf_profile {
     use std::fs;
     use std::time::{Duration, Instant};

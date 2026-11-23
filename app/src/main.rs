@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod clip_images;
 mod clip_nav;
 mod cloud;
 mod collector_loop;
@@ -186,6 +187,10 @@ fn main() {
             commands::set_language,
             commands::delete_clip,
             commands::clear_clips,
+            commands::clip_images_for_day,
+            commands::clip_image_preview,
+            commands::copy_clip_image,
+            commands::delete_clip_image,
             commands::export_day_csv,
             commands::get_autostart,
             commands::set_autostart,

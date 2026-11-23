@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     ADD_IDLE_SECONDS,
     include_str!("../migrations/010_preferences.sql"),
     include_str!("../migrations/011_sync.sql"),
+    include_str!("../migrations/012_clipboard_images.sql"),
 ];
 const ADD_IDLE_SECONDS: &str = include_str!("../migrations/007_idle_secs.sql");
 const ACTIVITY_SCHEMA_VERSION: usize = 8;
@@ -60,6 +61,20 @@ impl StorageError {
 
 /// Сколько записей буфера обмена хранится максимум.
 const MAX_CLIPS: usize = 2000;
+/// Сколько скриншотов буфера обмена хранится максимум.
+const MAX_CLIP_IMAGES: i64 = 200;
+
+#[derive(Debug, Clone)]
+pub struct ClipImageRow {
+    pub id: i64,
+    pub ts: Timestamp,
+    pub app: String,
+    pub width: u32,
+    pub height: u32,
+    pub mime: String,
+    pub size_bytes: u64,
+    pub thumb: Vec<u8>,
+}
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
@@ -306,6 +321,84 @@ impl Storage {
         Ok(())
     }
 
+    pub fn insert_clip_image(
+        &self,
+        ts: Timestamp,
+        app: &str,
+        width: u32,
+        height: u32,
+        mime: &str,
+        thumb: &[u8],
+        data: &[u8],
+        sha256: &[u8],
+    ) -> Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO clipboard_images (ts, app, width, height, mime, thumb, data, sha256)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(sha256) DO UPDATE SET ts = excluded.ts, app = excluded.app",
+        )?;
+        stmt.execute(params![ts, app, width, height, mime, thumb, data, sha256])?;
+        Ok(())
+    }
+
+    pub fn clip_images_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<ClipImageRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, ts, app, width, height, mime, length(data), thumb
+             FROM clipboard_images WHERE ts >= ?1 AND ts < ?2 ORDER BY ts DESC, id DESC",
+        )?;
+        let rows = stmt.query_map(params![from, to], |r| {
+            Ok(ClipImageRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                app: r.get(2)?,
+                width: r.get(3)?,
+                height: r.get(4)?,
+                mime: r.get(5)?,
+                size_bytes: r.get::<_, i64>(6)?.max(0) as u64,
+                thumb: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn recent_clip_images(&self, limit: usize) -> Result<Vec<ClipImageRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, ts, app, width, height, mime, length(data), thumb
+             FROM clipboard_images ORDER BY ts DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(ClipImageRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                app: r.get(2)?,
+                width: r.get(3)?,
+                height: r.get(4)?,
+                mime: r.get(5)?,
+                size_bytes: r.get::<_, i64>(6)?.max(0) as u64,
+                thumb: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn clip_image_data(&self, id: i64) -> Result<Option<(String, Vec<u8>)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT mime, data FROM clipboard_images WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn delete_clip_image(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM clipboard_images WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_clip_images(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM clipboard_images", [])?;
+        Ok(())
+    }
+
     pub fn add_bookmark(&self, b: &Bookmark) -> Result<()> {
         self.conn.execute(
             "INSERT INTO bookmarks (ts, app, title, note) VALUES (?1, ?2, ?3, ?4)",
@@ -445,7 +538,7 @@ impl Storage {
     /// Удаляет всё записанное за период («забыть последние N минут»).
     pub fn delete_between(&self, from: Timestamp, to: Timestamp) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        for table in ["samples", "bookmarks", "system_samples", "proc_samples", "clipboard"] {
+        for table in ["samples", "bookmarks", "system_samples", "proc_samples", "clipboard", "clipboard_images"] {
             tx.execute(&format!("DELETE FROM {table} WHERE ts >= ?1 AND ts < ?2"), params![from, to])?;
         }
         tx.execute("DELETE FROM category_overrides WHERE scope = 'visit' AND ts >= ?1 AND ts < ?2", params![from, to])?;
@@ -460,6 +553,11 @@ impl Storage {
         self.conn.execute(
             "DELETE FROM clipboard WHERE rowid NOT IN (SELECT rowid FROM clipboard ORDER BY ts DESC LIMIT ?1)",
             params![MAX_CLIPS as i64],
+        )?;
+        self.conn.execute("DELETE FROM clipboard_images WHERE ts < ?1", params![procs_before])?;
+        self.conn.execute(
+            "DELETE FROM clipboard_images WHERE id NOT IN (SELECT id FROM clipboard_images ORDER BY ts DESC, id DESC LIMIT ?1)",
+            params![MAX_CLIP_IMAGES],
         )?;
         self.conn.execute("DELETE FROM system_samples WHERE ts < ?1", params![system_before])?;
         self.conn.execute("DELETE FROM proc_samples WHERE ts < ?1", params![procs_before])?;

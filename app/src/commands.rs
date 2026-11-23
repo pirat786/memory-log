@@ -175,6 +175,38 @@ pub fn clear_clips(state: Shared) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn clip_images_for_day(
+    state: Shared<'_>,
+    date: Option<String>,
+) -> Result<Vec<crate::clip_images::ClipImageItem>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.clip_images_for_day(date.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn clip_image_preview(state: Shared<'_>, id: i64) -> Result<Option<String>, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.clip_image_preview(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn copy_clip_image(state: Shared<'_>, id: i64) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.copy_clip_image(id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn delete_clip_image(state: Shared, id: i64) -> Result<(), String> {
+    state.delete_clip_image(id)
+}
+
+#[tauri::command]
 pub fn clip_nav_state(state: Shared) -> Option<serde_json::Value> {
     state.clip_payload.lock().ok().and_then(|p| p.clone())
 }

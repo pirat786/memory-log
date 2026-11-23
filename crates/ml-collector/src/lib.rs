@@ -14,14 +14,25 @@ mod windows_power;
 pub use system::{DiskInfo, LiveProc, LiveSystem, LiveSystemProbe, SystemCollector};
 #[cfg(windows)]
 pub use windows_clipboard::{
-    clipboard_seq, read_full_text as get_clipboard_text, set_text as set_clipboard_text,
-    ClipboardWatcher,
+    clipboard_seq, read_full_text as get_clipboard_text, set_image_rgba as set_clipboard_image,
+    set_text as set_clipboard_text, ClipboardWatcher,
 };
 #[cfg(windows)]
 pub use windows_active::{idle_seconds, interactive_desktop};
 
+pub struct ClipboardImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+pub enum ClipboardContent {
+    Text(String),
+    Image(ClipboardImage),
+}
+
 pub struct ClipboardCapture {
-    pub text: String,
+    pub content: ClipboardContent,
     pub owner_app: Option<String>,
 }
 
@@ -54,6 +65,11 @@ impl ClipboardWatcher {
 
 #[cfg(not(windows))]
 pub fn set_clipboard_text(_text: &str) -> Option<u32> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn set_clipboard_image(_rgba: &[u8], _width: u32, _height: u32) -> Option<u32> {
     None
 }
 

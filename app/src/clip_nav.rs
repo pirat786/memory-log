@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use crate::clip_images;
 use crate::log;
 use crate::state::AppState;
 
@@ -72,33 +73,78 @@ fn place_popup(win: &tauri::WebviewWindow) {
     let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }
 
+enum NavEntry {
+    Text(ml_core::ClipEntry),
+    Image(ml_storage::ClipImageRow),
+}
+
+impl NavEntry {
+    fn ts(&self) -> i64 {
+        match self {
+            NavEntry::Text(c) => c.ts,
+            NavEntry::Image(i) => i.ts,
+        }
+    }
+}
+
 /// Горячая клавиша: `delta` = +1 — к более старой записи, −1 — к более новой.
-/// Выбранный текст сразу кладётся в буфер обмена, дальше его вставляют обычным Ctrl+V.
+/// Выбранный текст или картинка сразу кладётся в буфер обмена, дальше вставляют обычным Ctrl+V.
 pub fn step(app: &AppHandle, state: &Arc<AppState>, delta: i32) {
-    let clips = match state.storage.lock().map_err(|e| e.to_string()).and_then(|st| st.recent_clips(RECENT).map_err(|e| e.to_string())) {
-        Ok(c) => c,
+    let (clips, images) = match state.storage.lock().map_err(|e| e.to_string()).and_then(|st| {
+        let clips = st.recent_clips(RECENT).map_err(|e| e.to_string())?;
+        let images = st.recent_clip_images(RECENT).map_err(|e| e.to_string())?;
+        Ok((clips, images))
+    }) {
+        Ok(res) => res,
         Err(e) => return log::info(&format!("листание буфера: {e}")),
     };
+
+    let mut entries: Vec<NavEntry> = clips
+        .into_iter()
+        .map(NavEntry::Text)
+        .chain(images.into_iter().map(NavEntry::Image))
+        .collect();
+    entries.sort_by(|a, b| b.ts().cmp(&a.ts()));
+    entries.truncate(RECENT);
 
     let (sel, generation) = {
         let Ok(mut nav) = state.clip_nav.lock() else { return };
         let active = nav.last.is_some_and(|t| t.elapsed() < SHOW_FOR);
         let from = if active { nav.sel } else { 0 };
-        let max = clips.len().saturating_sub(1) as i64;
+        let max = entries.len().saturating_sub(1) as i64;
         nav.sel = (from as i64 + delta as i64).clamp(0, max) as usize;
         nav.last = Some(Instant::now());
         nav.generation += 1;
         (nav.sel, nav.generation)
     };
 
-    if let Some(clip) = clips.get(sel) {
-        if let Some(seq) = ml_collector::set_clipboard_text(&clip.text) {
-            state.clip_ignore.store(seq, Ordering::Relaxed);
+    if let Some(entry) = entries.get(sel) {
+        match entry {
+            NavEntry::Text(clip) => {
+                if let Some(seq) = ml_collector::set_clipboard_text(&clip.text) {
+                    state.clip_ignore.store(seq, Ordering::Relaxed);
+                }
+            }
+            NavEntry::Image(img) => {
+                if let Err(e) = state.copy_clip_image(img.id) {
+                    log::info(&format!("листание буфера (картинка): {e}"));
+                }
+            }
         }
     }
 
     let Some((win, created)) = ensure_popup(app) else { return };
-    let items: Vec<_> = clips.iter().map(|c| json!({ "app": c.app, "text": preview(&c.text) })).collect();
+    let items: Vec<_> = entries
+        .iter()
+        .map(|entry| match entry {
+            NavEntry::Text(c) => json!({ "app": c.app, "text": preview(&c.text) }),
+            NavEntry::Image(img) => json!({
+                "app": img.app,
+                "text": format!("🖼 {}×{} ({} KB)", img.width, img.height, (img.size_bytes / 1024).max(1)),
+                "thumb": clip_images::to_data_url(&img.mime, &img.thumb),
+            }),
+        })
+        .collect();
     let payload = json!({ "items": items, "sel": sel });
     if let Ok(mut slot) = state.clip_payload.lock() {
         *slot = Some(payload.clone());

@@ -171,6 +171,7 @@ const HISTORY_LIMIT = 300;
 let timelineData = [];
 let historyBlocks = [];
 let clipData = [];
+let clipImages = [];
 let allHits = [];
 let tab = "windows";
 let activeView = "day";
@@ -367,6 +368,7 @@ async function render() {
   timelineData = s.timeline;
   historyBlocks = s.history_blocks;
   clipData = s.clips;
+  clipImages = scope === "local" ? await invoke("clip_images_for_day", { date: iso(current) }) : [];
   renderDeviceOverview(scope, devices);
   if (scope !== "all") renderDayTrack(s, dayChanged);
   renderHistory();
@@ -574,6 +576,7 @@ $("clearClips").onclick = async () => {
   if (!window.confirm(t("clip.clear_confirm"))) return;
   await invoke("clear_clips");
   clipData = [];
+  clipImages = [];
   renderHistory();
 };
 

@@ -519,7 +519,54 @@ impl AppState {
     }
 
     pub fn clear_clips(&self) -> Result<(), String> {
-        self.storage.lock().map_err(|e| e.to_string())?.clear_clips().map_err(|e| e.to_string())
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        st.clear_clips().map_err(|e| e.to_string())?;
+        st.clear_clip_images().map_err(|e| e.to_string())
+    }
+
+    pub fn clip_images_for_day(&self, date: Option<&str>) -> Result<Vec<crate::clip_images::ClipImageItem>, String> {
+        let date = parse_date(date, &self.lang())?;
+        let (from, to) = time::day_bounds(date);
+        let rows = self
+            .storage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clip_images_between(from, to)
+            .map_err(|e| e.to_string())?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub fn clip_image_preview(&self, id: i64) -> Result<Option<String>, String> {
+        let row = self
+            .storage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clip_image_data(id)
+            .map_err(|e| e.to_string())?;
+        Ok(row.map(|(mime, data)| crate::clip_images::to_data_url(&mime, &data)))
+    }
+
+    pub fn copy_clip_image(&self, id: i64) -> Result<(), String> {
+        let row = self
+            .storage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clip_image_data(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "screenshot not found".to_string())?;
+        let (w, h, rgba) = crate::clip_images::decode_to_rgba(&row.1)?;
+        let seq = ml_collector::set_clipboard_image(&rgba, w, h)
+            .ok_or_else(|| "failed to write image to clipboard".to_string())?;
+        self.clip_ignore.store(seq, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn delete_clip_image(&self, id: i64) -> Result<(), String> {
+        self.storage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .delete_clip_image(id)
+            .map_err(|e| e.to_string())
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>, String> {

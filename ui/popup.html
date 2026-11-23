@@ -16,6 +16,8 @@
       border-left: 3px solid transparent; }
     .row .app { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row .text { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+    .row .img-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .row .thumb { width: 42px; height: 28px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
     .row.sel { background: light-dark(#e9eaff, #2e3446); border-left-color: light-dark(#4d50cc, #8ab4ff); }
     .foot { color: var(--muted); font-size: 11.5px; margin: 6px 4px 0; }
     .empty { color: var(--muted); padding: 18px 8px; }
@@ -51,7 +53,19 @@
         app.textContent = it.app;
         const text = document.createElement("div");
         text.className = "text";
-        text.textContent = it.text;
+        if (it.thumb) {
+          const wrap = document.createElement("div");
+          wrap.className = "img-wrap";
+          const img = document.createElement("img");
+          img.className = "thumb";
+          img.src = it.thumb;
+          const label = document.createElement("span");
+          label.textContent = it.text;
+          wrap.append(img, label);
+          text.append(wrap);
+        } else {
+          text.textContent = it.text;
+        }
         row.append(app, text);
         rows.append(row);
       });
