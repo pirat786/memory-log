@@ -46,6 +46,11 @@ fn main() {
                         return;
                     }
                     let Some(state) = app.try_state::<Arc<AppState>>() else { return };
+                    if shortcut.key == Code::KeyR {
+                        let st = state.inner().clone();
+                        std::thread::spawn(move || sys_tools::fix_selection_or_word_layout(&st.clip_ignore));
+                        return;
+                    }
                     // Вниз по списку — к более старым записям, вверх — к новым.
                     let delta = if shortcut.key == Code::ArrowDown { 1 } else { -1 };
                     clip_nav::step(app, &state, delta);
@@ -75,7 +80,7 @@ fn main() {
 
             // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
             let mods = Some(Modifiers::CONTROL | Modifiers::ALT);
-            for key in [Code::ArrowDown, Code::ArrowUp, Code::Space] {
+            for key in [Code::ArrowDown, Code::ArrowUp, Code::Space, Code::KeyR] {
                 if let Err(e) = app.global_shortcut().register(Shortcut::new(mods, key)) {
                     log::info(&format!("не удалось занять сочетание клавиш для листания буфера: {e}"));
                 }
@@ -141,6 +146,13 @@ fn main() {
             commands::open_main_window,
             commands::quick_drop,
             commands::quick_drop_cancel,
+            commands::fast_delete,
+            commands::clipboard_fix_layout,
+            commands::who_locks_file,
+            commands::kill_pid,
+            commands::restart_explorer,
+            commands::flush_dns,
+            commands::open_quick_path,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось собрать Memory Log")

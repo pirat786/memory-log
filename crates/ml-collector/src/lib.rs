@@ -13,7 +13,10 @@ mod windows_power;
 
 pub use system::{DiskInfo, LiveProc, LiveSystem, LiveSystemProbe, SystemCollector};
 #[cfg(windows)]
-pub use windows_clipboard::{set_text as set_clipboard_text, ClipboardWatcher};
+pub use windows_clipboard::{
+    clipboard_seq, read_full_text as get_clipboard_text, set_text as set_clipboard_text,
+    ClipboardWatcher,
+};
 #[cfg(windows)]
 pub use windows_active::{idle_seconds, interactive_desktop};
 
@@ -52,6 +55,16 @@ impl ClipboardWatcher {
 #[cfg(not(windows))]
 pub fn set_clipboard_text(_text: &str) -> Option<u32> {
     None
+}
+
+#[cfg(not(windows))]
+pub fn get_clipboard_text() -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn clipboard_seq() -> u32 {
+    0
 }
 
 pub trait Collector: Send {

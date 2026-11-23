@@ -1,23 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
-
 use serde::Serialize;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JunkCategory {
-    pub id: &'static str,
-    pub bytes: u64,
-    pub files: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CleanResult {
-    pub freed_bytes: u64,
-    pub deleted_files: u64,
-    pub skipped_files: u64,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StartupItem {
@@ -37,234 +19,6 @@ pub struct ListeningPort {
     pub process: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivePowerRule {
-    pub condition: String,
-    pub action: String,
-    pub delay_secs: u64,
-    pub elapsed_secs: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PowerStatus {
-    pub keep_awake: bool,
-    pub rule: Option<ActivePowerRule>,
-}
-
-#[derive(Default)]
-pub struct PowerGuard {
-    pub keep_awake: bool,
-    condition: Option<String>,
-    action: Option<String>,
-    delay_secs: u64,
-    started_at: i64,
-    low_since: Option<i64>,
-}
-
-impl PowerGuard {
-    pub fn set_rule(&mut self, condition: String, action: String, delay_mins: u64, now: i64) -> Result<(), String> {
-        if !matches!(condition.as_str(), "net_idle" | "cpu_idle" | "timer") {
-            return Err("Invalid power condition".into());
-        }
-        if !matches!(action.as_str(), "sleep" | "shutdown") {
-            return Err("Invalid power action".into());
-        }
-        self.condition = Some(condition);
-        self.action = Some(action);
-        self.delay_secs = delay_mins.max(1) * 60;
-        self.started_at = now;
-        self.low_since = None;
-        Ok(())
-    }
-
-    pub fn cancel_rule(&mut self) {
-        self.condition = None;
-        self.action = None;
-        self.low_since = None;
-    }
-
-    pub fn status(&self, now: i64) -> PowerStatus {
-        let rule = match (self.condition.as_ref(), self.action.as_ref()) {
-            (Some(condition), Some(action)) => {
-                let elapsed_secs = match condition.as_str() {
-                    "timer" => now.saturating_sub(self.started_at) as u64,
-                    _ => self.low_since.map(|since| now.saturating_sub(since) as u64).unwrap_or(0),
-                };
-                Some(ActivePowerRule {
-                    condition: condition.clone(),
-                    action: action.clone(),
-                    delay_secs: self.delay_secs,
-                    elapsed_secs: elapsed_secs.min(self.delay_secs),
-                })
-            }
-            _ => None,
-        };
-        PowerStatus { keep_awake: self.keep_awake, rule }
-    }
-
-    pub fn evaluate(&mut self, net_bytes_10s: u64, cpu_pct: f32, now: i64) -> Option<String> {
-        let condition = self.condition.as_deref()?;
-        let triggered = match condition {
-            "net_idle" => {
-                if net_bytes_10s < 100 * 1024 * 10 {
-                    let since = *self.low_since.get_or_insert(now);
-                    now.saturating_sub(since) as u64 >= self.delay_secs
-                } else {
-                    self.low_since = None;
-                    false
-                }
-            }
-            "cpu_idle" => {
-                if cpu_pct < 10.0 {
-                    let since = *self.low_since.get_or_insert(now);
-                    now.saturating_sub(since) as u64 >= self.delay_secs
-                } else {
-                    self.low_since = None;
-                    false
-                }
-            }
-            "timer" => now.saturating_sub(self.started_at) as u64 >= self.delay_secs,
-            _ => false,
-        };
-        if triggered {
-            let action = self.action.take();
-            self.cancel_rule();
-            action
-        } else {
-            None
-        }
-    }
-}
-
-enum Target {
-    Dir(PathBuf),
-    MatchingFiles { dir: PathBuf, prefixes: &'static [&'static str], suffix: &'static str },
-}
-
-fn junk_targets(id: &str) -> Vec<Target> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    match id {
-        "temp" => vec![Target::Dir(std::env::temp_dir())],
-        "caches" => {
-            let Some(local) = local else { return Vec::new() };
-            vec![
-                Target::MatchingFiles {
-                    dir: local.join("Microsoft").join("Windows").join("Explorer"),
-                    prefixes: &["thumbcache_", "iconcache_"],
-                    suffix: ".db",
-                },
-                Target::Dir(local.join("D3DSCache")),
-            ]
-        }
-        "dumps" => {
-            let Some(local) = local else { return Vec::new() };
-            vec![
-                Target::Dir(local.join("CrashDumps")),
-                Target::Dir(local.join("Microsoft").join("Windows").join("WER")),
-            ]
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn walk_dir(dir: &Path, cutoff: Option<SystemTime>, on_file: &mut impl FnMut(&Path, u64)) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            walk_dir(&path, cutoff, on_file);
-        } else if meta.is_file() {
-            if let Some(limit) = cutoff {
-                if meta.modified().ok().is_some_and(|t| t > limit) {
-                    continue;
-                }
-            }
-            on_file(&path, meta.len());
-        }
-    }
-}
-
-fn remove_empty_subdirs(dir: &Path) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-        if !meta.file_type().is_symlink() && meta.is_dir() {
-            remove_empty_subdirs(&path);
-            let _ = fs::remove_dir(&path);
-        }
-    }
-}
-
-fn for_each_target_file(target: &Target, cutoff: Option<SystemTime>, on_file: &mut impl FnMut(&Path, u64)) {
-    match target {
-        Target::Dir(dir) => walk_dir(dir, cutoff, on_file),
-        Target::MatchingFiles { dir, prefixes, suffix } => {
-            let Ok(entries) = fs::read_dir(dir) else { return };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-                if meta.file_type().is_symlink() || !meta.is_file() {
-                    continue;
-                }
-                let name = entry.file_name();
-                let name = name.to_string_lossy().to_ascii_lowercase();
-                if prefixes.iter().any(|p| name.starts_with(p)) && name.ends_with(suffix) {
-                    on_file(&path, meta.len());
-                }
-            }
-        }
-    }
-}
-
-fn temp_cutoff(id: &str, min_age_hours: u64) -> Option<SystemTime> {
-    (id == "temp" && min_age_hours > 0)
-        .then(|| SystemTime::now().checked_sub(Duration::from_secs(min_age_hours.saturating_mul(3600))))
-        .flatten()
-}
-
-pub fn scan_junk(min_age_hours: u64) -> Vec<JunkCategory> {
-    ["temp", "caches", "dumps"]
-        .into_iter()
-        .map(|id| {
-            let mut bytes = 0u64;
-            let mut files = 0u64;
-            let cutoff = temp_cutoff(id, min_age_hours);
-            for target in junk_targets(id) {
-                for_each_target_file(&target, cutoff, &mut |_, len| {
-                    bytes += len;
-                    files += 1;
-                });
-            }
-            JunkCategory { id, bytes, files }
-        })
-        .collect()
-}
-
-pub fn clean_junk(ids: &[String], min_age_hours: u64) -> CleanResult {
-    let mut result = CleanResult { freed_bytes: 0, deleted_files: 0, skipped_files: 0 };
-    for id in ids {
-        let cutoff = temp_cutoff(id, min_age_hours);
-        for target in junk_targets(id) {
-            for_each_target_file(&target, cutoff, &mut |path, len| {
-                if fs::remove_file(path).is_ok() {
-                    result.freed_bytes += len;
-                    result.deleted_files += 1;
-                } else {
-                    result.skipped_files += 1;
-                }
-            });
-            if let Target::Dir(dir) = &target {
-                remove_empty_subdirs(dir);
-            }
-        }
-    }
-    result
-}
 
 #[cfg(windows)]
 mod win {
@@ -635,16 +389,355 @@ mod win {
             _ => {}
         }
     }
+
+    pub fn who_locks_paths(paths: &[String]) -> Result<Vec<super::LockingProcess>, String> {
+        use std::path::PathBuf;
+        use windows::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA, WIN32_ERROR};
+        use windows::Win32::System::RestartManager::{
+            RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY,
+            RM_PROCESS_INFO,
+        };
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let mut files: Vec<PathBuf> = Vec::new();
+        for raw in paths {
+            let p = PathBuf::from(raw);
+            if p.is_file() {
+                files.push(p);
+            } else if p.is_dir() {
+                for entry in walkdir::WalkDir::new(&p).max_depth(3).into_iter().flatten() {
+                    if entry.file_type().is_file() {
+                        files.push(entry.into_path());
+                        if files.len() >= 200 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if files.is_empty() {
+            return Err("нет файлов для проверки".into());
+        }
+
+        let wide_paths: Vec<Vec<u16>> = files
+            .iter()
+            .map(|p| wide(&p.to_string_lossy()))
+            .collect();
+        let pcwstrs: Vec<PCWSTR> = wide_paths.iter().map(|w| PCWSTR(w.as_ptr())).collect();
+
+        let mut session = 0u32;
+        let mut key = vec![0u16; (CCH_RM_SESSION_KEY + 1) as usize];
+        let err = unsafe { RmStartSession(&mut session, 0, windows::core::PWSTR(key.as_mut_ptr())) };
+        if err != WIN32_ERROR(0) {
+            return Err(format!("RmStartSession error: {}", err.0));
+        }
+
+        struct SessionGuard(u32);
+        impl Drop for SessionGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = RmEndSession(self.0);
+                }
+            }
+        }
+        let _guard = SessionGuard(session);
+
+        let reg_err = unsafe { RmRegisterResources(session, Some(&pcwstrs), None, None) };
+        if reg_err != WIN32_ERROR(0) {
+            return Err(format!("RmRegisterResources error: {}", reg_err.0));
+        }
+
+        let mut needed = 0u32;
+        let mut count = 0u32;
+        let mut reboot_reasons = 0u32;
+        let list_err = unsafe {
+            RmGetList(session, &mut needed, &mut count, None, &mut reboot_reasons)
+        };
+        if list_err == WIN32_ERROR(0) && needed == 0 {
+            return Ok(Vec::new());
+        }
+        if list_err != ERROR_MORE_DATA && list_err != WIN32_ERROR(0) {
+            return Err(format!("RmGetList error: {}", list_err.0));
+        }
+
+        let mut infos = vec![RM_PROCESS_INFO::default(); needed as usize];
+        count = needed;
+        let list_err2 = unsafe {
+            RmGetList(
+                session,
+                &mut needed,
+                &mut count,
+                Some(infos.as_mut_ptr()),
+                &mut reboot_reasons,
+            )
+        };
+        if list_err2 != WIN32_ERROR(0) {
+            return Err(format!("RmGetList error: {}", list_err2.0));
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for info in infos.into_iter().take(count as usize) {
+            let pid = info.Process.dwProcessId;
+            if pid == 0 || !seen.insert(pid) {
+                continue;
+            }
+            let app_len = info.strAppName.iter().position(|&c| c == 0).unwrap_or(info.strAppName.len());
+            let app_name = String::from_utf16_lossy(&info.strAppName[..app_len]).trim().to_string();
+
+            let mut exe_name = String::new();
+            unsafe {
+                if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    let mut buf = vec![0u16; 512];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(
+                        h,
+                        PROCESS_NAME_WIN32,
+                        windows::core::PWSTR(buf.as_mut_ptr()),
+                        &mut len,
+                    )
+                    .is_ok()
+                    {
+                        let full = String::from_utf16_lossy(&buf[..len as usize]);
+                        exe_name = std::path::Path::new(&full)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                    let _ = CloseHandle(h);
+                }
+            }
+            let name = if exe_name.is_empty() {
+                if app_name.is_empty() { format!("PID {pid}") } else { app_name.clone() }
+            } else {
+                exe_name
+            };
+            out.push(super::LockingProcess { pid, name, app_name });
+        }
+        Ok(out)
+    }
+
+    pub fn kill_pid(pid: u32) -> Result<(), String> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+        if pid == 0 || pid == std::process::id() {
+            return Err("недопустимый PID".into());
+        }
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
+                .map_err(|e| format!("не удалось открыть процесс {pid}: {e}"))?;
+            let res = TerminateProcess(handle, 1);
+            let _ = CloseHandle(handle);
+            res.map_err(|e| format!("не удалось завершить процесс {pid}: {e}"))
+        }
+    }
+
+    pub fn restart_explorer() -> Result<(), String> {
+        let _ = Command::new("taskkill.exe")
+            .args(["/F", "/IM", "explorer.exe"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        Command::new("explorer.exe")
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn flush_dns() -> Result<(), String> {
+        let out = Command::new("ipconfig.exe")
+            .arg("/flushdns")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err("ipconfig /flushdns failed".into())
+        }
+    }
+
+    pub fn open_quick_path(kind: &str) -> Result<(), String> {
+        match kind {
+            "temp" => {
+                let p = std::env::temp_dir();
+                Command::new("explorer.exe").arg(p).spawn().map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            "appdata" => {
+                let p = std::env::var_os("APPDATA")
+                    .or_else(|| std::env::var_os("LOCALAPPDATA"))
+                    .ok_or_else(|| "APPDATA not found".to_string())?;
+                Command::new("explorer.exe").arg(p).spawn().map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            "hosts" => {
+                let win_dir = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+                let hosts = std::path::PathBuf::from(win_dir).join("System32\\drivers\\etc\\hosts");
+                reveal_in_explorer(&hosts.to_string_lossy())
+            }
+            _ => Err(format!("unknown quick path: {kind}")),
+        }
+    }
+
+    fn send_keys(events: &[(u16, bool)]) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LEFT,
+        };
+        let inputs: Vec<INPUT> = events
+            .iter()
+            .map(|&(vk, up)| {
+                let mut flags = KEYBD_EVENT_FLAGS(0);
+                if up {
+                    flags |= KEYEVENTF_KEYUP;
+                }
+                if vk == VK_LEFT.0 {
+                    flags |= KEYEVENTF_EXTENDEDKEY;
+                }
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            wScan: 0,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                }
+            })
+            .collect();
+        unsafe {
+            let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    fn wait_clipboard_change(before: u32) -> bool {
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            if ml_collector::clipboard_seq() != before {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn fix_selection_or_word_layout(clip_ignore: &std::sync::atomic::AtomicU32) {
+        use std::sync::atomic::Ordering;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            VK_C, VK_CONTROL, VK_LEFT, VK_MENU, VK_SHIFT, VK_V,
+        };
+
+        // Отпускаем модификаторы горячей клавиши (Ctrl+Alt), чтобы не мешали SendInput.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        send_keys(&[(VK_MENU.0, true), (VK_CONTROL.0, true), (VK_SHIFT.0, true)]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let seq0 = ml_collector::clipboard_seq();
+        // Пробуем скопировать выделенный текст (Ctrl+C).
+        send_keys(&[
+            (VK_CONTROL.0, false),
+            (VK_C.0, false),
+            (VK_C.0, true),
+            (VK_CONTROL.0, true),
+        ]);
+
+        if !wait_clipboard_change(seq0) {
+            // Ничего не выделено: выделяем последнее слово (Ctrl+Shift+Left) и копируем.
+            let seq1 = ml_collector::clipboard_seq();
+            send_keys(&[
+                (VK_CONTROL.0, false),
+                (VK_SHIFT.0, false),
+                (VK_LEFT.0, false),
+                (VK_LEFT.0, true),
+                (VK_SHIFT.0, true),
+                (VK_C.0, false),
+                (VK_C.0, true),
+                (VK_CONTROL.0, true),
+            ]);
+            if !wait_clipboard_change(seq1) {
+                return;
+            }
+        }
+
+        let Some(text) = ml_collector::get_clipboard_text() else { return };
+        let fixed = super::fix_keyboard_layout(&text);
+        if fixed == text {
+            return;
+        }
+        if let Some(seq) = ml_collector::set_clipboard_text(&fixed) {
+            clip_ignore.store(seq, Ordering::Relaxed);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            send_keys(&[
+                (VK_CONTROL.0, false),
+                (VK_V.0, false),
+                (VK_V.0, true),
+                (VK_CONTROL.0, true),
+            ]);
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct LockingProcess {
+    pub pid: u32,
+    pub name: String,
+    pub app_name: String,
+}
+
+const EN_LAYOUT: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#$^&";
+const RU_LAYOUT: &str = "йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ\"№;:?";
+
+pub fn fix_keyboard_layout(text: &str) -> String {
+    let mut en_count = 0usize;
+    let mut ru_count = 0usize;
+    for ch in text.chars() {
+        if ch.is_ascii_alphabetic() {
+            en_count += 1;
+        } else if ('а'..='я').contains(&ch) || ('А'..='Я').contains(&ch) || ch == 'ё' || ch == 'Ё' {
+            ru_count += 1;
+        }
+    }
+    let to_ru = en_count >= ru_count;
+    let (from, to): (Vec<char>, Vec<char>) = if to_ru {
+        (EN_LAYOUT.chars().collect(), RU_LAYOUT.chars().collect())
+    } else {
+        (RU_LAYOUT.chars().collect(), EN_LAYOUT.chars().collect())
+    };
+    text.chars()
+        .map(|ch| {
+            from.iter()
+                .position(|&c| c == ch)
+                .and_then(|idx| to.get(idx).copied())
+                .unwrap_or(ch)
+        })
+        .collect()
 }
 
 #[cfg(not(windows))]
 mod win {
-    use super::{ListeningPort, StartupItem};
+    use super::{ListeningPort, LockingProcess, StartupItem};
     pub fn startup_items() -> Result<Vec<StartupItem>, String> { Ok(Vec::new()) }
     pub fn set_startup_item(_: &str, _: bool) -> Result<(), String> { Err("Windows only".into()) }
     pub fn listening_ports(_: &std::collections::HashMap<u32, String>) -> Result<Vec<ListeningPort>, String> { Ok(Vec::new()) }
     pub fn reveal_in_explorer(_: &str) -> Result<(), String> { Err("Windows only".into()) }
     pub fn execute_power_action(_: &str) {}
+    pub fn who_locks_paths(_: &[String]) -> Result<Vec<LockingProcess>, String> { Err("Windows only".into()) }
+    pub fn kill_pid(_: u32) -> Result<(), String> { Err("Windows only".into()) }
+    pub fn restart_explorer() -> Result<(), String> { Err("Windows only".into()) }
+    pub fn flush_dns() -> Result<(), String> { Err("Windows only".into()) }
+    pub fn open_quick_path(_: &str) -> Result<(), String> { Err("Windows only".into()) }
+    pub fn fix_selection_or_word_layout(_: &std::sync::atomic::AtomicU32) {}
 }
 
-pub use win::{execute_power_action, listening_ports, reveal_in_explorer, set_startup_item, startup_items};
+pub use win::{
+    execute_power_action, fix_selection_or_word_layout, flush_dns, kill_pid, listening_ports,
+    open_quick_path, restart_explorer, reveal_in_explorer, set_startup_item, startup_items,
+    who_locks_paths,
+};

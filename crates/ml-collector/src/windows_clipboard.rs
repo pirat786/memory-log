@@ -86,6 +86,47 @@ unsafe fn read_text() -> Result<Option<String>, ()> {
     Ok(text.map(|t| t.trim().chars().take(MAX_CHARS).collect::<String>()).filter(|t| !t.is_empty()))
 }
 
+pub fn clipboard_seq() -> u32 {
+    unsafe { GetClipboardSequenceNumber() }
+}
+
+/// Читает весь обычный текст из буфера обмена (до 1M символов) без обрезки пробелов.
+pub fn read_full_text() -> Option<String> {
+    unsafe {
+        if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
+            return None;
+        }
+        let mut opened = false;
+        for _ in 0..10 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !opened {
+            return None;
+        }
+        let text = (|| {
+            let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
+            let hglobal = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hglobal) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+            let mut len = 0usize;
+            while len < 1_000_000 && *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let text = String::from_utf16_lossy(slice::from_raw_parts(ptr, len));
+            let _ = GlobalUnlock(hglobal);
+            Some(text)
+        })();
+        let _ = CloseClipboard();
+        text.filter(|t| !t.is_empty())
+    }
+}
+
 /// Кладёт текст в буфер обмена. Возвращает номер изменения буфера (см. `ClipboardWatcher::poll`).
 pub fn set_text(text: &str) -> Option<u32> {
     unsafe {
