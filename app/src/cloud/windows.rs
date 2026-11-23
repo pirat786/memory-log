@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const CREDENTIAL: PCWSTR = w!("app.memorylog.desktop/GoogleDrive");
 
-fn http_error(error: Error) -> String {
+pub(crate) fn http_error(error: Error) -> String {
     if error.code() == HRESULT::from_win32(ERROR_WINHTTP_TIMEOUT) {
         super::NETWORK_TIMEOUT.into()
     } else {
@@ -109,15 +109,4 @@ pub fn read_credentials() -> Result<Vec<u8>, String> {
 
 pub fn delete_credentials() {
     unsafe { let _ = CredDeleteW(CREDENTIAL, CRED_TYPE_GENERIC, 0); }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn distinguishes_winhttp_timeout_from_other_errors() {
-        assert_eq!(http_error(Error::from_hresult(HRESULT::from_win32(12002))), super::super::NETWORK_TIMEOUT);
-        assert_ne!(http_error(Error::from_hresult(HRESULT::from_win32(12029))), super::super::NETWORK_TIMEOUT);
-    }
 }

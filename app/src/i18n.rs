@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 
 include!(concat!(env!("OUT_DIR"), "/i18n_gen.rs"));
 
-const FALLBACK: &str = "en";
+pub(crate) const FALLBACK: &str = "en";
 
 type Dict = HashMap<String, String>;
 
-fn dicts() -> &'static HashMap<&'static str, Dict> {
+pub(crate) fn dicts() -> &'static HashMap<&'static str, Dict> {
     static DICTS: OnceLock<HashMap<&'static str, Dict>> = OnceLock::new();
     DICTS.get_or_init(|| {
         LANGS
@@ -57,30 +57,4 @@ fn system_locale() -> Option<String> {
 #[cfg(not(windows))]
 fn system_locale() -> Option<String> {
     std::env::var("LANG").ok().map(|l| l.replace('_', "-"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_language_has_the_same_keys_as_english() {
-        let d = dicts();
-        let en = &d[FALLBACK];
-        for (code, dict) in d {
-            for key in en.keys() {
-                assert!(dict.contains_key(key), "в {code}.json нет ключа {key}");
-            }
-            for key in dict.keys() {
-                assert!(en.contains_key(key), "в {code}.json лишний ключ {key}");
-            }
-        }
-    }
-
-    #[test]
-    fn substitutes_params_and_falls_back() {
-        assert_eq!(t_with("ru", "err.bad_date", &[("err", "x")]), "неверная дата: x");
-        assert_eq!(t("xx", "tray.quit"), "Quit");
-        assert_eq!(t("en", "no.such.key"), "no.such.key");
-    }
 }

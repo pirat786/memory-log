@@ -1,6 +1,6 @@
-mod google;
+pub(crate) mod google;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 #[cfg(not(windows))]
 mod windows {
     pub fn https(_: &str, _: &str, _: &str, _: &str, _: &[u8]) -> Result<(u32, Vec<u8>), String> {
@@ -31,9 +31,9 @@ use crate::state::AppState;
 const UPLOAD_LIMIT: u32 = 12;
 const DOWNLOAD_LIMIT: usize = 16;
 const SHARD_LIMIT: u64 = 64 * 1024 * 1024;
-const NETWORK_TIMEOUT: &str = "sync.network_timeout";
-const FIRST_TIMEOUT_RETRY: Duration = Duration::from_secs(5);
-const BACKGROUND_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const NETWORK_TIMEOUT: &str = "sync.network_timeout";
+pub(crate) const FIRST_TIMEOUT_RETRY: Duration = Duration::from_secs(5);
+pub(crate) const BACKGROUND_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 
 struct CachedToken {
     account: String,
@@ -147,12 +147,12 @@ fn validated_label(label: &str) -> Result<&str, String> {
     Ok(label)
 }
 
-fn filename(device: &str, day: i64) -> String {
+pub(crate) fn filename(device: &str, day: i64) -> String {
     let part = if day == META_DAY { "meta".to_string() } else { day.to_string() };
     format!("{}{device}-{part}.json.gz", google::PREFIX)
 }
 
-fn parse_filename(name: &str) -> Option<(String, i64)> {
+pub(crate) fn parse_filename(name: &str) -> Option<(String, i64)> {
     let (device, part) = name.strip_prefix(google::PREFIX)?.strip_suffix(".json.gz")?.rsplit_once('-')?;
     let id = Uuid::parse_str(device).ok()?;
     if id.simple().to_string() != device { return None; }
@@ -160,13 +160,13 @@ fn parse_filename(name: &str) -> Option<(String, i64)> {
     (day == META_DAY || (0..100_000).contains(&day)).then(|| (device.to_string(), day))
 }
 
-fn serialize_shard(shard: &Shard) -> Result<Vec<u8>, String> {
+pub(crate) fn serialize_shard(shard: &Shard) -> Result<Vec<u8>, String> {
     let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
     serde_json::to_writer(&mut gzip, shard).map_err(|e| e.to_string())?;
     gzip.finish().map_err(|e| e.to_string())
 }
 
-fn deserialize_shard(bytes: &[u8], device: &str, day: i64) -> Result<Shard, String> {
+pub(crate) fn deserialize_shard(bytes: &[u8], device: &str, day: i64) -> Result<Shard, String> {
     let mut json = Vec::new();
     GzDecoder::new(bytes).take(SHARD_LIMIT + 1).read_to_end(&mut json).map_err(|e| e.to_string())?;
     if json.len() as u64 > SHARD_LIMIT { return Err("synchronization archive is too large".into()); }
@@ -446,7 +446,7 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-fn next_sync_delay(result: Result<bool, String>, timeout_retry: &mut Duration) -> Duration {
+pub(crate) fn next_sync_delay(result: Result<bool, String>, timeout_retry: &mut Duration) -> Duration {
     if matches!(&result, Err(error) if error == NETWORK_TIMEOUT) {
         let wait = *timeout_retry;
         *timeout_retry = (*timeout_retry * 2).min(BACKGROUND_SYNC_INTERVAL);
@@ -456,36 +456,5 @@ fn next_sync_delay(result: Result<bool, String>, timeout_retry: &mut Duration) -
     match result {
         Ok(true) => FIRST_TIMEOUT_RETRY,
         Ok(false) | Err(_) => BACKGROUND_SYNC_INTERVAL,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ml_core::ActivityEvent;
-
-    #[test]
-    fn network_timeouts_retry_quickly_then_back_off() {
-        let mut next = FIRST_TIMEOUT_RETRY;
-        for seconds in [5, 10, 20, 40, 60, 60] {
-            assert_eq!(next_sync_delay(Err(NETWORK_TIMEOUT.into()), &mut next), Duration::from_secs(seconds));
-        }
-        assert_eq!(next_sync_delay(Ok(false), &mut next), BACKGROUND_SYNC_INTERVAL);
-        assert_eq!(next_sync_delay(Err(NETWORK_TIMEOUT.into()), &mut next), FIRST_TIMEOUT_RETRY);
-        assert_eq!(next_sync_delay(Err("sync.reauth".into()), &mut next), BACKGROUND_SYNC_INTERVAL);
-    }
-
-    #[test]
-    fn archive_round_trip_and_scope_check() {
-        let device = Uuid::new_v4().simple().to_string();
-        let shard = Shard {
-            protocol: 1, device: device.clone(), day: 10, label: None,
-            events: vec![ActivityEvent::Idle(10 * DAY_SECONDS)], bookmarks: vec![], rules: vec![],
-        };
-        assert_eq!(parse_filename(&filename(&device, 10)), Some((device.clone(), 10)));
-        assert_eq!(parse_filename(&filename(&device, META_DAY)), Some((device.clone(), META_DAY)));
-        let bytes = serialize_shard(&shard).unwrap();
-        assert_eq!(deserialize_shard(&bytes, &device, 10).unwrap().events, shard.events);
-        assert!(deserialize_shard(&bytes, &device, 11).is_err());
     }
 }

@@ -237,6 +237,84 @@ fn copy_stream<R: io::Read, W: io::Write>(
     Ok(total)
 }
 
+fn read_jpeg_exif_orientation(path: &Path) -> u16 {
+    let Ok(mut f) = File::open(path) else { return 1 };
+    let mut buf = vec![0u8; 64 * 1024];
+    let Ok(n) = io::Read::read(&mut f, &mut buf) else { return 1 };
+    let data = &buf[..n];
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return 1;
+    }
+    let mut i = 2;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+        if marker == 0xDA || marker == 0xD9 {
+            break;
+        }
+        if marker == 0x00 || (0xD0..=0xD7).contains(&marker) {
+            i += 2;
+            continue;
+        }
+        let seg_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+        if seg_len < 2 || i + 2 + seg_len > data.len() {
+            break;
+        }
+        if marker == 0xE1 && seg_len >= 14 && &data[i + 4..i + 10] == b"Exif\0\0" {
+            let tiff = &data[i + 10..i + 2 + seg_len];
+            if tiff.len() < 8 {
+                return 1;
+            }
+            let le = match &tiff[0..2] {
+                b"II" => true,
+                b"MM" => false,
+                _ => return 1,
+            };
+            let u16_at = |off: usize| -> Option<u16> {
+                let b = tiff.get(off..off + 2)?;
+                Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+            };
+            let u32_at = |off: usize| -> Option<u32> {
+                let b = tiff.get(off..off + 4)?;
+                Some(if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) })
+            };
+            let Some(ifd0) = u32_at(4).map(|v| v as usize) else { return 1 };
+            let Some(count) = u16_at(ifd0).map(|v| v as usize) else { return 1 };
+            for idx in 0..count {
+                let entry = ifd0 + 2 + idx * 12;
+                if u16_at(entry) == Some(0x0112) {
+                    return u16_at(entry + 8).unwrap_or(1);
+                }
+            }
+            return 1;
+        }
+        i += 2 + seg_len;
+    }
+    1
+}
+
+fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
+    match orientation {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
+fn has_transparent_pixels(img: &DynamicImage) -> bool {
+    if !img.color().has_alpha() {
+        return false;
+    }
+    img.to_rgba8().pixels().any(|p| p.0[3] < 255)
+}
+
 fn decode_image_safe(path: &Path) -> Result<(DynamicImage, ImageFormat), String> {
     let mut reader = ImageReader::open(path)
         .map_err(|e| format!("не удалось открыть {}: {e}", path.display()))?
@@ -250,9 +328,13 @@ fn decode_image_safe(path: &Path) -> Result<(DynamicImage, ImageFormat), String>
     limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
     reader.limits(limits);
 
-    let img = reader
+    let mut img = reader
         .decode()
         .map_err(|e| format!("ошибка декодирования {}: {e}", path.display()))?;
+    if fmt == ImageFormat::Jpeg {
+        let orient = read_jpeg_exif_orientation(path);
+        img = apply_exif_orientation(img, orient);
+    }
     Ok((img, fmt))
 }
 
@@ -279,19 +361,35 @@ fn encode_image(
             .map_err(|e| format!("ошибка JPEG-кодирования: {e}"))?;
         }
         ImageFormat::Png => {
-            let rgba = img.to_rgba8();
-            let enc = PngEncoder::new_with_quality(
-                &mut writer,
-                CompressionType::Fast,
-                PngFilter::Adaptive,
-            );
-            enc.write_image(
-                rgba.as_raw(),
-                rgba.width(),
-                rgba.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|e| format!("ошибка PNG-кодирования: {e}"))?;
+            if has_transparent_pixels(img) {
+                let rgba = img.to_rgba8();
+                let enc = PngEncoder::new_with_quality(
+                    &mut writer,
+                    CompressionType::Default,
+                    PngFilter::Adaptive,
+                );
+                enc.write_image(
+                    rgba.as_raw(),
+                    rgba.width(),
+                    rgba.height(),
+                    image::ExtendedColorType::Rgba8,
+                )
+                .map_err(|e| format!("ошибка PNG-кодирования: {e}"))?;
+            } else {
+                let rgb = img.to_rgb8();
+                let enc = PngEncoder::new_with_quality(
+                    &mut writer,
+                    CompressionType::Default,
+                    PngFilter::Adaptive,
+                );
+                enc.write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| format!("ошибка PNG-кодирования: {e}"))?;
+            }
         }
         ImageFormat::WebP => {
             img.write_to(&mut writer, ImageFormat::WebP)
@@ -351,7 +449,8 @@ pub fn process_images(
         total_in += file_size;
 
         let (mut img, orig_fmt) = decode_image_safe(&path)?;
-        if max_dim > 0 && mode != "strip" && (img.width() > max_dim || img.height() > max_dim) {
+        let resized = max_dim > 0 && mode != "strip" && (img.width() > max_dim || img.height() > max_dim);
+        if resized {
             let filter = if img.width() > max_dim * 2 || img.height() > max_dim * 2 {
                 FilterType::Triangle
             } else {
@@ -391,11 +490,37 @@ pub fn process_images(
             .and_then(|s| s.to_str())
             .unwrap_or("image");
         let out_stem = format!("{stem}{suffix}");
-        let out_path = unique_path(parent, &out_stem, out_ext);
+        let mut out_path = unique_path(parent, &out_stem, out_ext);
 
         encode_image(&img, &out_path, target_fmt, quality)?;
+        let mut out_size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
 
-        total_out += fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+        if matches!(mode, "auto" | "compress") && out_size >= file_size {
+            if target_fmt == ImageFormat::Jpeg && quality > 72 {
+                encode_image(&img, &out_path, ImageFormat::Jpeg, 72)?;
+                out_size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+            }
+            if out_size >= file_size && orig_fmt == ImageFormat::WebP && !has_transparent_pixels(&img) {
+                let jpg_path = unique_path(parent, &out_stem, "jpg");
+                if encode_image(&img, &jpg_path, ImageFormat::Jpeg, quality.min(80)).is_ok() {
+                    let jpg_size = fs::metadata(&jpg_path).map(|m| m.len()).unwrap_or(0);
+                    if jpg_size < out_size {
+                        let _ = fs::remove_file(&out_path);
+                        out_path = jpg_path;
+                        out_size = jpg_size;
+                    } else {
+                        let _ = fs::remove_file(&jpg_path);
+                    }
+                }
+            }
+            if out_size >= file_size && !resized && out_path.extension() == path.extension() {
+                fs::copy(&path, &out_path)
+                    .map_err(|e| format!("не удалось скопировать {}: {e}", path.display()))?;
+                out_size = file_size;
+            }
+        }
+
+        total_out += out_size;
         last_dims = format!("{}×{}", img.width(), img.height());
         last_out = out_path;
         processed += 1;
@@ -861,108 +986,4 @@ pub fn handle_drop(
         return process_images(paths, img_mode, max_dim, quality, app);
     }
     pack_zip(paths, zip_mode, app)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use image::{ImageBuffer, Rgb};
-    use std::io::Write;
-
-    struct TestDir(PathBuf);
-    impl TestDir {
-        fn new() -> Self {
-            let p = std::env::temp_dir().join(format!("ml_qf_{}", uuid::Uuid::new_v4()));
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn large_zip_pack_and_unpack_streaming() {
-        let dir = TestDir::new();
-        let src_dir = dir.path().join("big_data");
-        fs::create_dir_all(&src_dir).unwrap();
-
-        // 16 MB compressible log + 8 MB incompressible dummy jpg
-        let log_path = src_dir.join("big.log");
-        {
-            let mut w = BufWriter::new(File::create(&log_path).unwrap());
-            let line = b"2026-11-20T16:30:00Z INFO memory_log::collector heartbeat ok status=200\n";
-            for _ in 0..240_000 {
-                w.write_all(line).unwrap();
-            }
-        }
-        let jpg_path = src_dir.join("photo.jpg");
-        {
-            let mut w = BufWriter::new(File::create(&jpg_path).unwrap());
-            let chunk = vec![0xABu8; 1024 * 1024];
-            for _ in 0..8 {
-                w.write_all(&chunk).unwrap();
-            }
-        }
-
-        let pack_rep = pack_zip(vec![src_dir.to_string_lossy().into_owned()], "fast", None).unwrap();
-        assert_eq!(pack_rep.count, 2);
-        assert!(pack_rep.input_bytes > 20 * 1024 * 1024);
-        assert!(pack_rep.output_bytes < pack_rep.input_bytes / 2);
-
-        let unpack_rep = unpack_zip(pack_rep.output_path.clone(), None).unwrap();
-        assert_eq!(unpack_rep.count, 2);
-        assert_eq!(unpack_rep.output_bytes, pack_rep.input_bytes);
-    }
-
-    #[test]
-    fn large_image_compress_and_resize() {
-        let dir = TestDir::new();
-        let img_path = dir.path().join("huge.png");
-
-        // 4000x3000 synthetic image (~36 MB raw RGB)
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4000, 3000, |x, y| {
-            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
-        });
-        DynamicImage::ImageRgb8(img).save(&img_path).unwrap();
-
-        let rep = process_images(
-            vec![img_path.to_string_lossy().into_owned()],
-            "jpg",
-            1920,
-            82,
-            None,
-        )
-        .unwrap();
-        assert_eq!(rep.count, 1);
-        assert_eq!(rep.detail, "1920×1440");
-        assert!(Path::new(&rep.output_path).exists());
-        assert!(rep.output_bytes < rep.input_bytes);
-    }
-
-    #[test]
-    fn unpack_blocks_zip_slip() {
-        let dir = TestDir::new();
-        let zip_path = dir.path().join("evil.zip");
-        {
-            let f = File::create(&zip_path).unwrap();
-            let mut zw = ZipWriter::new(f);
-            zw.start_file("../escape.txt", SimpleFileOptions::default())
-                .unwrap();
-            zw.write_all(b"pwned").unwrap();
-            zw.start_file("safe.txt", SimpleFileOptions::default())
-                .unwrap();
-            zw.write_all(b"ok").unwrap();
-            zw.finish().unwrap();
-        }
-        let rep = unpack_zip(zip_path.to_string_lossy().into_owned(), None).unwrap();
-        assert_eq!(rep.count, 1);
-        assert!(!dir.path().join("escape.txt").exists());
-        assert!(Path::new(&rep.output_path).join("safe.txt").exists());
-    }
 }

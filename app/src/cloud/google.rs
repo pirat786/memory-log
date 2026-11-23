@@ -80,7 +80,7 @@ fn token(client: &str, params: &[(&str, &str)]) -> Result<Token, String> {
     Err(token_error(status, &data, params.contains(&("grant_type", "authorization_code"))))
 }
 
-fn token_error(status: u32, data: &[u8], exchanging_code: bool) -> String {
+pub(crate) fn token_error(status: u32, data: &[u8], exchanging_code: bool) -> String {
     #[derive(Deserialize)]
     struct OAuthError<'a> {
         error: &'a str,
@@ -259,22 +259,4 @@ impl Drive<'_> {
 
 fn version_number(value: &str) -> u64 {
     value.parse().unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::token_error;
-
-    #[test]
-    fn identifies_missing_desktop_client_secret() {
-        let response = br#"{"error":"invalid_request","error_description":"client_secret is missing."}"#;
-        assert_eq!(token_error(400, response, true), "sync.bad_client");
-    }
-
-    #[test]
-    fn distinguishes_rejected_sign_in_from_an_expired_connection() {
-        let response = br#"{"error":"invalid_grant"}"#;
-        assert_eq!(token_error(400, response, true), "sync.code_rejected");
-        assert_eq!(token_error(400, response, false), "sync.reauth");
-    }
 }

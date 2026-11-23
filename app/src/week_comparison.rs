@@ -9,12 +9,12 @@ use crate::state::AppState;
 #[derive(Default, Serialize)]
 pub struct WeekTotals {
     from: String,
-    through: String,
-    active_secs: i64,
-    recorded_days: u32,
+    pub(crate) through: String,
+    pub(crate) active_secs: i64,
+    pub(crate) recorded_days: u32,
     categories: HashMap<Category, i64>,
     apps: HashMap<String, i64>,
-    goals_met: HashMap<Category, u32>,
+    pub(crate) goals_met: HashMap<Category, u32>,
 }
 
 #[derive(Serialize)]
@@ -24,13 +24,13 @@ pub struct WeekComparison {
     goals: Vec<Goal>,
 }
 
-fn timestamp(date: NaiveDate, time: NaiveTime) -> i64 {
+pub(crate) fn timestamp(date: NaiveDate, time: NaiveTime) -> i64 {
     let local = date.and_time(time);
     Local.from_local_datetime(&local).earliest()
         .unwrap_or_else(|| local.and_utc().with_timezone(&Local)).timestamp()
 }
 
-fn aggregate(
+pub(crate) fn aggregate(
     start: NaiveDate,
     now: DateTime<Local>,
     hours: Option<(NaiveTime, NaiveTime)>,
@@ -99,30 +99,4 @@ pub fn compare(state: &AppState, work_hours: Option<[u32; 2]>) -> Result<WeekCom
         previous: aggregate(monday - Duration::days(7), now, hours, &goals, load)?,
         goals,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn comparable_work_hours_clip_sessions_and_count_goal_days() {
-        let now = Local.with_ymd_and_hms(2026, 11, 18, 10, 0, 0).single().unwrap();
-        let monday = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
-        let workday = |hour| NaiveTime::from_hms_opt(hour, 0, 0).unwrap();
-        let goals = [Goal { category: Category::Work, limit_mins: 120 }];
-        let totals = aggregate(monday, now, Some((workday(9), workday(18))), &goals, |date| {
-            if date.weekday() == chrono::Weekday::Tue {
-                return Ok(vec![]);
-            }
-            Ok(vec![Session {
-                start: timestamp(date, workday(8)), end: timestamp(date, workday(12)),
-                app: "editor".into(), title: "Document".into(), category: Category::Work,
-            }])
-        }).unwrap();
-        assert_eq!(totals.through, "2026-11-11");
-        assert_eq!(totals.active_secs, 4 * 3600);
-        assert_eq!(totals.recorded_days, 2);
-        assert_eq!(totals.goals_met[&Category::Work], 1);
-    }
 }

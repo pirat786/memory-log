@@ -9,6 +9,8 @@ mod log;
 mod quick_files;
 mod state;
 mod sys_tools;
+#[cfg(test)]
+mod tests;
 mod tray;
 #[cfg(windows)]
 mod updater;
