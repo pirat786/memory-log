@@ -381,6 +381,73 @@ impl Storage {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    pub fn search_clips(&self, query: &str, limit: usize) -> Result<Vec<ClipEntry>> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT ts, app, text FROM clipboard ORDER BY ts DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ClipEntry { ts: r.get(0)?, app: r.get(1)?, text: r.get(2)? })
+        })?;
+        let q_ascii = q.is_ascii();
+        let qb = q.as_bytes();
+        let mut out = Vec::with_capacity(limit.min(100));
+        for row in rows {
+            let entry = row?;
+            let matched = if q_ascii && entry.app.is_ascii() && entry.text.is_ascii() {
+                entry.app.as_bytes().windows(qb.len()).any(|w| w.eq_ignore_ascii_case(qb))
+                    || entry.text.as_bytes().windows(qb.len()).any(|w| w.eq_ignore_ascii_case(qb))
+            } else {
+                entry.app.to_lowercase().contains(&q) || entry.text.to_lowercase().contains(&q)
+            };
+            if matched {
+                out.push(entry);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn search_clip_images(&self, query: &str, limit: usize) -> Result<Vec<ClipImageRow>> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, ts, app, width, height, mime, length(data), thumb
+             FROM clipboard_images ORDER BY ts DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ClipImageRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                app: r.get(2)?,
+                width: r.get(3)?,
+                height: r.get(4)?,
+                mime: r.get(5)?,
+                size_bytes: r.get::<_, i64>(6)?.max(0) as u64,
+                thumb: r.get(7)?,
+            })
+        })?;
+        let mut out = Vec::with_capacity(limit.min(50));
+        for row in rows {
+            let img = row?;
+            let dims = format!("{}x{}", img.width, img.height);
+            if img.app.to_lowercase().contains(&q) || dims.contains(&q) {
+                out.push(img);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn clip_image_data(&self, id: i64) -> Result<Option<(String, Vec<u8>)>> {
         let mut stmt = self
             .conn

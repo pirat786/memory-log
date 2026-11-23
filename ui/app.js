@@ -172,6 +172,7 @@ let timelineData = [];
 let historyBlocks = [];
 let clipData = [];
 let clipImages = [];
+let clipSearchHits = null;
 let allHits = [];
 let tab = "windows";
 let activeView = "day";
@@ -553,16 +554,23 @@ let searchRequest = 0;
 function searchAll() {
   clearTimeout(searchTimer);
   const request = ++searchRequest;
-  if (tab !== "all") return;
+  if (tab !== "all" && tab !== "clips") return;
   const q = $("q").value.trim();
   if (!q) {
     allHits = [];
+    clipSearchHits = null;
     return renderHistory();
   }
   searchTimer = setTimeout(() => guarded(async () => {
-    const hits = await searchForDevice(q, currentDeviceScope());
-    if (request !== searchRequest || tab !== "all") return;
-    allHits = hits;
+    if (tab === "all") {
+      const hits = await searchForDevice(q, currentDeviceScope());
+      if (request !== searchRequest || tab !== "all") return;
+      allHits = hits;
+    } else if (tab === "clips") {
+      const hits = await invoke("search_clipboard", { query: q });
+      if (request !== searchRequest || tab !== "clips") return;
+      clipSearchHits = hits;
+    }
     renderHistory();
   }), 250);
 }
@@ -572,11 +580,13 @@ $("q").oninput = () => {
   searchAll();
 };
 $("windowOrder").onchange = renderHistory;
+$("clipKind").onchange = renderHistory;
 $("clearClips").onclick = async () => {
   if (!window.confirm(t("clip.clear_confirm"))) return;
   await invoke("clear_clips");
   clipData = [];
   clipImages = [];
+  clipSearchHits = null;
   renderHistory();
 };
 

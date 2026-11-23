@@ -191,6 +191,7 @@ fn main() {
             commands::clip_image_preview,
             commands::copy_clip_image,
             commands::delete_clip_image,
+            commands::search_clipboard,
             commands::export_day_csv,
             commands::get_autostart,
             commands::set_autostart,

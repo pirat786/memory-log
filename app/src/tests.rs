@@ -644,6 +644,41 @@ mod clip_images_tests {
         st.delete_clip_image(list[0].id).unwrap();
         assert!(st.clip_images_between(0, 300).unwrap().is_empty());
     }
+
+    #[test]
+    fn searches_clipboard_text_and_images_across_days() {
+        let st = Storage::open_in_memory().unwrap();
+        st.insert_clip(&ml_core::ClipEntry {
+            ts: 100,
+            app: "WindowsTerminal".into(),
+            text: "cargo build --release".into(),
+        })
+        .unwrap();
+        st.insert_clip(&ml_core::ClipEntry {
+            ts: 200_000,
+            app: "Telegram".into(),
+            text: "Привет мир".into(),
+        })
+        .unwrap();
+        st.insert_clip_image(150, "chrome", 1280, 720, "image/jpeg", b"t1", b"d1", &[1u8; 32]).unwrap();
+        st.insert_clip_image(250_000, "code", 1600, 900, "image/jpeg", b"t2", b"d2", &[2u8; 32]).unwrap();
+
+        let text_hits = st.search_clips("привет", 10).unwrap();
+        assert_eq!(text_hits.len(), 1);
+        assert_eq!(text_hits[0].app, "Telegram");
+
+        let term_hits = st.search_clips("release", 10).unwrap();
+        assert_eq!(term_hits.len(), 1);
+        assert_eq!(term_hits[0].ts, 100);
+
+        let img_hits = st.search_clip_images("chrome", 10).unwrap();
+        assert_eq!(img_hits.len(), 1);
+        assert_eq!(img_hits[0].width, 1280);
+
+        let dim_hits = st.search_clip_images("1600x900", 10).unwrap();
+        assert_eq!(dim_hits.len(), 1);
+        assert_eq!(dim_hits[0].app, "code");
+    }
 }
 
 mod perf_profile {

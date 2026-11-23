@@ -21,6 +21,12 @@ use crate::cloud::{self, SyncControl};
 use crate::sys_tools::PowerGuard;
 
 #[derive(Serialize)]
+pub struct ClipboardSearchResult {
+    pub clips: Vec<ml_core::ClipEntry>,
+    pub images: Vec<crate::clip_images::ClipImageItem>,
+}
+
+#[derive(Serialize)]
 pub struct DeviceDay {
     device: Device,
     summary: DaySummary,
@@ -567,6 +573,18 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .delete_clip_image(id)
             .map_err(|e| e.to_string())
+    }
+
+    pub fn search_clipboard(&self, query: &str) -> Result<ClipboardSearchResult, String> {
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let clips = st.search_clips(query, 100).map_err(|e| e.to_string())?;
+        let images = st
+            .search_clip_images(query, 50)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(ClipboardSearchResult { clips, images })
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>, String> {

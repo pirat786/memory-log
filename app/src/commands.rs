@@ -207,6 +207,17 @@ pub fn delete_clip_image(state: Shared, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn search_clipboard(
+    state: Shared<'_>,
+    query: String,
+) -> Result<crate::state::ClipboardSearchResult, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.search_clipboard(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn clip_nav_state(state: Shared) -> Option<serde_json::Value> {
     state.clip_payload.lock().ok().and_then(|p| p.clone())
 }

@@ -273,6 +273,7 @@ function renderHistory() {
     : null;
   target.replaceChildren();
   $("clearClips").hidden = true;
+  $("clipKind").hidden = tab !== "clips";
   const range = tab === "windows" ? selectedRange : null;
   $("historyRange").hidden = !range;
   if (range) {
@@ -302,6 +303,14 @@ function renderHistory() {
     }
     empty = q ? t("hist.empty.day_q") : t("hist.empty.windows");
   } else if (tab === "clips") {
+    const kind = $("clipKind")?.value || "all";
+    const globalMode = Boolean(q && clipSearchHits);
+    const activeImages = globalMode ? clipSearchHits.images : clipImages;
+    const activeClips = globalMode ? clipSearchHits.clips : clipData;
+    const fmtStamp = (ts) => (globalMode
+      ? `${new Date(ts * 1000).toLocaleDateString(I18N.locale, { day: "numeric", month: "short" })} ${clock(ts)}`
+      : clock(ts));
+
     const dlg = $("clipImageDlg");
     const dlgImg = $("clipImageFull");
     if (dlg && !dlg.dataset.bound) {
@@ -310,7 +319,9 @@ function renderHistory() {
       dlg.onclick = (e) => { if (e.target === dlg) dlg.close(); };
       dlg.addEventListener("close", () => { dlgImg.src = ""; });
     }
-    const visibleImages = clipImages.filter((img) => matches(q, appName(img.app), `${img.width}x${img.height}`));
+    const visibleImages = kind === "text"
+      ? []
+      : activeImages.filter((img) => globalMode || matches(q, appName(img.app), `${img.width}x${img.height}`));
     const imageGrid = visibleImages.length ? el("div", "clip-images-grid") : null;
     if (imageGrid) {
       for (const img of visibleImages) {
@@ -322,11 +333,11 @@ function renderHistory() {
         thumb.onclick = async () => {
           const full = await invoke("clip_image_preview", { id: img.id });
           if (!full) return;
-          $("clipImageMeta").textContent = `${clock(img.ts)} · ${appName(img.app)} · ${img.width}×${img.height} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`;
+          $("clipImageMeta").textContent = `${fmtStamp(img.ts)} · ${appName(img.app)} · ${img.width}×${img.height} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`;
           dlgImg.src = full;
           dlg.showModal();
         };
-        const meta = el("div", "clip-img-meta", `${clock(img.ts)} · ${appName(img.app)} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`);
+        const meta = el("div", "clip-img-meta", `${fmtStamp(img.ts)} · ${appName(img.app)} · ${Math.max(1, Math.round(img.size_bytes / 1024))} KB`);
         const copyBtn = el("button", "small", t("clip.copy"));
         copyBtn.type = "button";
         copyBtn.onclick = async (e) => {
@@ -346,6 +357,7 @@ function renderHistory() {
           e.stopPropagation();
           await invoke("delete_clip_image", { id: img.id });
           clipImages = clipImages.filter((x) => x.id !== img.id);
+          if (clipSearchHits) clipSearchHits.images = clipSearchHits.images.filter((x) => x.id !== img.id);
           renderHistory();
         };
         const actions = el("div", "clip-img-actions");
@@ -360,11 +372,13 @@ function renderHistory() {
     if (!Array.isArray(pinned)) pinned = [];
     const pinnedSet = new Set(pinned.map((p) => p.text));
     const savePinned = (next) => localStorage.setItem("pinnedClips", JSON.stringify(next));
-    const combined = [
-      ...pinned.map((c) => ({ ...c, pinned: true })),
-      ...clipData.filter((c) => !pinnedSet.has(c.text)).map((c) => ({ ...c, pinned: false })),
-    ];
-    clipRows = combined.filter((c) => matches(q, appName(c.app), c.text));
+    const combined = kind === "images" ? [] : (globalMode
+      ? activeClips.map((c) => ({ ...c, pinned: pinnedSet.has(c.text) }))
+      : [
+          ...pinned.map((c) => ({ ...c, pinned: true })),
+          ...activeClips.filter((c) => !pinnedSet.has(c.text)).map((c) => ({ ...c, pinned: false })),
+        ]);
+    clipRows = combined.filter((c) => globalMode || matches(q, appName(c.app), c.text));
     clipSel = Math.min(clipSel, Math.max(clipRows.length - 1, 0));
     rows = clipRows.map((c, i) => {
       const buttons = el("span", "btns");
@@ -380,7 +394,7 @@ function renderHistory() {
       };
       buttons.append(copyButton(c.text), pinBtn);
       if (!c.pinned) buttons.append(deleteButton(c.text));
-      const meta = c.pinned ? `📌 ${t("clip.pinned")}` : `${clock(c.ts)} · ${appName(c.app)}`;
+      const meta = c.pinned ? `📌 ${t("clip.pinned")}` : `${fmtStamp(c.ts)} · ${appName(c.app)}`;
       const row = historyRow(meta, c.text, "", buttons);
       if (c.pinned) row.classList.add("clip-pinned");
       row.classList.toggle("selected", i === clipSel);
