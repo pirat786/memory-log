@@ -133,7 +133,18 @@ mod quick_files {
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
 
-    use crate::quick_files::{fast_delete, handle_drop, pack_zip, process_images, unpack_zip};
+    use crate::quick_files::{fast_delete, handle_drop, pack_zip, process_images, unpack_zip, QuickFileReport};
+
+    fn print_speed(label: &str, rep: &QuickFileReport) {
+        let in_mb = rep.input_bytes as f64 / 1_048_576.0;
+        let out_mb = rep.output_bytes as f64 / 1_048_576.0;
+        let secs = (rep.elapsed_ms as f64 / 1000.0).max(0.001);
+        let mbps = in_mb.max(out_mb) / secs;
+        println!(
+            "[SPEED] {label}: {in_mb:.2} MB -> {out_mb:.2} MB | {} files | {} ms | {mbps:.1} MB/s",
+            rep.count, rep.elapsed_ms
+        );
+    }
 
     struct TestDir(PathBuf);
     impl TestDir {
@@ -176,11 +187,13 @@ mod quick_files {
         }
 
         let pack_rep = pack_zip(vec![src_dir.to_string_lossy().into_owned()], "fast", None).unwrap();
+        print_speed("ZIP pack (fast)", &pack_rep);
         assert_eq!(pack_rep.count, 2);
         assert!(pack_rep.input_bytes > 20 * 1024 * 1024);
         assert!(pack_rep.output_bytes < pack_rep.input_bytes / 2);
 
         let unpack_rep = unpack_zip(pack_rep.output_path.clone(), None).unwrap();
+        print_speed("ZIP unpack", &unpack_rep);
         assert_eq!(unpack_rep.count, 2);
         assert_eq!(unpack_rep.output_bytes, pack_rep.input_bytes);
     }
@@ -203,6 +216,7 @@ mod quick_files {
             None,
         )
         .unwrap();
+        print_speed("4K PNG -> JPG 1920", &rep);
         assert_eq!(rep.count, 1);
         assert_eq!(rep.detail, "1920×1440");
         assert!(Path::new(&rep.output_path).exists());
@@ -298,6 +312,7 @@ mod quick_files {
                 None,
             )
             .unwrap();
+            print_speed(label, &rep);
             assert!(Path::new(&rep.output_path).exists());
             if mode == "compress" {
                 assert!(
@@ -368,6 +383,7 @@ mod quick_files {
         assert!(out_dir.join("sub").join("b.jpg").exists());
 
         let del_rep = fast_delete(vec![src.to_string_lossy().into_owned()], None).unwrap();
+        print_speed("Fast delete", &del_rep);
         assert_eq!(del_rep.count, 2);
         assert!(!src.exists());
 

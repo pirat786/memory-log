@@ -126,10 +126,12 @@ fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
 }
 
 fn has_transparent_pixels(img: &DynamicImage) -> bool {
-    if !img.color().has_alpha() {
-        return false;
+    match img {
+        DynamicImage::ImageRgba8(buf) => buf.pixels().any(|p| p.0[3] < 255),
+        DynamicImage::ImageLumaA8(buf) => buf.pixels().any(|p| p.0[1] < 255),
+        _ if !img.color().has_alpha() => false,
+        _ => img.to_rgba8().pixels().any(|p| p.0[3] < 255),
     }
-    img.to_rgba8().pixels().any(|p| p.0[3] < 255)
 }
 
 fn decode_image_safe(path: &Path) -> Result<(DynamicImage, ImageFormat), String> {
