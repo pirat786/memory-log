@@ -62,6 +62,7 @@ pub struct AppState {
     pub tray_items: Mutex<Vec<(&'static str, tauri::menu::MenuItem<tauri::Wry>)>>,
     pub live_system: Mutex<Option<LiveSystemProbe>>,
     pub power_guard: Mutex<PowerGuard>,
+    recording_settings_cache: Mutex<RecordingSettings>,
 }
 
 fn parse_date(date: Option<&str>, lang: &str) -> Result<NaiveDate, String> {
@@ -150,6 +151,7 @@ impl AppState {
             log::info(&format!("база была повреждена, старый файл сохранён: {}", moved.display()));
         }
         let idle_minutes = storage.idle_minutes()?;
+        let initial_recording = storage.recording_settings()?;
         cloud::initialize(&storage)?;
         Ok(Self {
             storage: Mutex::new(storage),
@@ -168,6 +170,7 @@ impl AppState {
             tray_items: Mutex::new(Vec::new()),
             live_system: Mutex::new(None),
             power_guard: Mutex::new(PowerGuard::default()),
+            recording_settings_cache: Mutex::new(initial_recording),
         })
     }
 
@@ -330,8 +333,23 @@ impl AppState {
         Ok(sessions)
     }
 
+    pub fn cached_recording_settings(&self) -> RecordingSettings {
+        self.recording_settings_cache
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| RecordingSettings {
+                clipboard_enabled: true,
+                retention_days: 0,
+                excluded_apps: String::new(),
+            })
+    }
+
     pub fn recording_settings(&self) -> Result<RecordingSettings, String> {
-        self.storage.lock().map_err(|e| e.to_string())?.recording_settings().map_err(|e| e.to_string())
+        let settings = self.storage.lock().map_err(|e| e.to_string())?.recording_settings().map_err(|e| e.to_string())?;
+        if let Ok(mut cache) = self.recording_settings_cache.lock() {
+            *cache = settings.clone();
+        }
+        Ok(settings)
     }
 
     pub fn set_recording_settings(&self, mut settings: RecordingSettings) -> Result<(), String> {
@@ -348,6 +366,9 @@ impl AppState {
         let st = self.storage.lock().map_err(|e| e.to_string())?;
         let old = st.recording_settings().map_err(|e| e.to_string())?;
         st.set_recording_settings(&settings).map_err(|e| e.to_string())?;
+        if let Ok(mut cache) = self.recording_settings_cache.lock() {
+            *cache = settings.clone();
+        }
         if old.clipboard_enabled != settings.clipboard_enabled || old.excluded_apps != settings.excluded_apps {
             self.clipboard_config_version.fetch_add(1, Ordering::Relaxed);
         }
@@ -390,42 +411,83 @@ impl AppState {
 
     pub fn calendar_heatmap(&self, month: &str, device: Option<&str>) -> Result<Vec<WeekDay>, String> {
         let mut date = parse_date(Some(month), &self.lang())?;
-        let month = date.month();
-        let st = self.storage.lock().map_err(|e| e.to_string())?;
-        let mut days = Vec::new();
-        while date.month() == month && date <= time::today() {
-            let (from, to) = time::day_bounds(date);
-            let active_secs = match device {
-                None => {
-                    if st.has_records(from, to).map_err(|e| e.to_string())? {
-                        let sessions = self.sessions_for_day(&st, date).map_err(|e| e.to_string())?;
-                        summary::week_day(&date.to_string(), &sessions).active_secs
-                    } else {
-                        0
-                    }
-                }
-                Some(scope) => {
-                    let mut total = if scope == "all" && st.has_records(from, to).map_err(|e| e.to_string())? {
-                        let sessions = self.sessions_for_day(&st, date).map_err(|e| e.to_string())?;
-                        summary::week_day(&date.to_string(), &sessions).active_secs
-                    } else {
-                        0
-                    };
-                    let filter = (scope != "all").then_some(scope);
-                    for peer in st.sync_peers().map_err(|e| e.to_string())? {
-                        if filter.is_some_and(|id| id != peer.id) { continue; }
-                        let events = st.peer_activity(&peer.id, from - sessions::MAX_GAP_SECS, to + sessions::MAX_GAP_SECS)
-                            .map_err(|e| e.to_string())?;
-                        let (sessions, _) = sessions::sessionize_with_away(&events, &self.categorizer, (from, to));
-                        total += summary::week_day(&date.to_string(), &sessions).active_secs;
-                    }
-                    total
-                }
-            };
-            if active_secs > 0 {
-                days.push(WeekDay { date: date.to_string(), active_secs, top_category: None });
-            }
+        let month_num = date.month();
+        let today = time::today();
+        let mut month_dates = Vec::with_capacity(31);
+        while date.month() == month_num && date <= today {
+            month_dates.push(date);
             date = date.checked_add_days(Days::new(1)).ok_or_else(|| "invalid calendar date".to_string())?;
+        }
+        let (Some(&first_date), Some(&last_date)) = (month_dates.first(), month_dates.last()) else {
+            return Ok(Vec::new());
+        };
+        let month_from = time::day_bounds(first_date).0;
+        let month_to = time::day_bounds(last_date).1;
+
+        let st = self.storage.lock().map_err(|e| e.to_string())?;
+        let include_local = device.is_none() || device == Some("all");
+        let local_events = if include_local {
+            st.activity_between(month_from - sessions::MAX_GAP_SECS, month_to + sessions::MAX_GAP_SECS)
+                .map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+        let local_overrides = if include_local && !local_events.is_empty() {
+            st.category_overrides(month_from, month_to).map_err(|e| e.to_string())?
+        } else {
+            Vec::new()
+        };
+
+        let peers: Vec<ml_storage::sync::Device> = match device {
+            Some(scope) => {
+                let filter = (scope != "all").then_some(scope);
+                st.sync_peers()
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .filter(|p| filter.is_none_or(|id| id == p.id))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let mut peer_events = Vec::with_capacity(peers.len());
+        for peer in &peers {
+            let ev = st
+                .peer_activity(&peer.id, month_from - sessions::MAX_GAP_SECS, month_to + sessions::MAX_GAP_SECS)
+                .map_err(|e| e.to_string())?;
+            peer_events.push(ev);
+        }
+
+        let event_ts = |e: &ml_core::ActivityEvent| match e {
+            ml_core::ActivityEvent::Window(s) => s.ts,
+            ml_core::ActivityEvent::Break(ts) | ml_core::ActivityEvent::Idle(ts) => *ts,
+        };
+
+        let mut days = Vec::new();
+        for d in month_dates {
+            let (from, to) = time::day_bounds(d);
+            let mut total = 0;
+            if include_local && !local_events.is_empty() {
+                let lo = local_events.partition_point(|e| event_ts(e) < from - sessions::MAX_GAP_SECS);
+                let hi = local_events.partition_point(|e| event_ts(e) < to + sessions::MAX_GAP_SECS);
+                if lo < hi {
+                    let mut sessions = sessions::sessionize(&local_events[lo..hi], &self.categorizer, (from, to));
+                    if !local_overrides.is_empty() {
+                        apply_overrides(&mut sessions, &local_overrides);
+                    }
+                    total += summary::week_day(&d.to_string(), &sessions).active_secs;
+                }
+            }
+            for ev in &peer_events {
+                let lo = ev.partition_point(|e| event_ts(e) < from - sessions::MAX_GAP_SECS);
+                let hi = ev.partition_point(|e| event_ts(e) < to + sessions::MAX_GAP_SECS);
+                if lo < hi {
+                    let (sessions, _) = sessions::sessionize_with_away(&ev[lo..hi], &self.categorizer, (from, to));
+                    total += summary::week_day(&d.to_string(), &sessions).active_secs;
+                }
+            }
+            if total > 0 {
+                days.push(WeekDay { date: d.to_string(), active_secs: total, top_category: None });
+            }
         }
         Ok(days)
     }

@@ -1,4 +1,5 @@
 use std::slice;
+use std::sync::OnceLock;
 
 use windows::core::w;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
@@ -57,7 +58,9 @@ impl ClipboardWatcher {
 /// `Err` — буфер сейчас недоступен, `Ok(None)` — текста нет или копирование нужно пропустить.
 unsafe fn read_text() -> Result<Option<String>, ()> {
     // Менеджеры паролей помечают скопированные пароли этим форматом: такие не записываем.
-    let excluded = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+    static EXCLUDE_FMT: OnceLock<u32> = OnceLock::new();
+    let excluded = *EXCLUDE_FMT
+        .get_or_init(|| RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing")));
     if excluded != 0 && IsClipboardFormatAvailable(excluded).is_ok() {
         return Ok(None);
     }

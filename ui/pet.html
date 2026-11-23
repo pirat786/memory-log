@@ -158,7 +158,11 @@
       }, 1500);
     });
 
+    let lastSentX = null;
+    let lastSentY = null;
+
     async function syncState() {
+      if (document.hidden) return;
       try {
         const [b, power, status] = await Promise.all([
           invoke("pet_bounds"),
@@ -174,10 +178,13 @@
     setInterval(syncState, 5000);
     syncState().then(() => {
       x = Math.round((bounds[0] + bounds[1]) / 2);
+      lastSentX = x;
+      lastSentY = bounds[2];
       invoke("pet_move", { x, y: bounds[2] });
     });
 
     setInterval(() => {
+      if (document.hidden) return;
       const [minX, maxX, y] = bounds;
       if (isPaused && !isBusy) {
         cat.classList.remove("walk");
@@ -203,7 +210,12 @@
       }
       cat.classList.add("walk");
       cat.classList.toggle("flip", dir < 0);
-      invoke("pet_move", { x: Math.round(x), y });
+      const rx = Math.round(x);
+      if (rx !== lastSentX || y !== lastSentY) {
+        lastSentX = rx;
+        lastSentY = y;
+        invoke("pet_move", { x: rx, y });
+      }
     }, 40);
 
     cat.onclick = () => {

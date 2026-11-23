@@ -74,17 +74,46 @@ impl Categorizer {
     }
 
     pub fn categorize(&self, app: &str, title: &str) -> Category {
-        let app = app.to_lowercase();
-        let title = title.to_lowercase();
+        let mut app_lower: Option<String> = None;
+        let mut title_lower: Option<String> = None;
         for rule in &self.rules {
-            let by_app = rule.app.iter().any(|p| app.contains(p));
-            let by_title = rule.title.iter().any(|p| title.contains(p));
-            if by_app || by_title {
+            let by_app = rule.app.iter().any(|p| contains_ci(app, p, &mut app_lower));
+            if by_app {
+                return rule.category;
+            }
+            let by_title = rule.title.iter().any(|p| contains_ci(title, p, &mut title_lower));
+            if by_title {
                 return rule.category;
             }
         }
         Category::Other
     }
+}
+
+fn contains_ci(haystack: &str, needle_lower: &str, lower_cache: &mut Option<String>) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() {
+        if !needle_lower.is_ascii() {
+            return false;
+        }
+        if !haystack.bytes().any(|b| b.is_ascii_uppercase()) {
+            return haystack.contains(needle_lower);
+        }
+        if haystack.len() <= 256 {
+            let mut buf = [0u8; 256];
+            for (dst, &src) in buf.iter_mut().zip(haystack.as_bytes()) {
+                *dst = src.to_ascii_lowercase();
+            }
+            // SAFETY: input is ASCII, and to_ascii_lowercase preserves ASCII validity.
+            let lower = unsafe { std::str::from_utf8_unchecked(&buf[..haystack.len()]) };
+            return lower.contains(needle_lower);
+        }
+    }
+    lower_cache
+        .get_or_insert_with(|| haystack.to_lowercase())
+        .contains(needle_lower)
 }
 
 #[cfg(test)]

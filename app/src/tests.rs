@@ -597,3 +597,357 @@ mod sys_tools {
         assert_eq!(fix_keyboard_layout("Ghbdtn^ rfr ltkf&"), "Привет: как дела?");
     }
 }
+
+mod perf_profile {
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    use chrono::{Duration as ChronoDuration, Utc};
+    use ml_collector::{interactive_desktop, idle_seconds, LiveSystemProbe, SystemCollector};
+    use ml_core::{Categorizer, ClipEntry, ProcSample, Sample, SystemSample};
+    use ml_storage::Storage;
+
+    use crate::perf_alloc;
+    use crate::state::AppState;
+
+    #[cfg(windows)]
+    mod win_perf {
+        #[repr(C)]
+        #[derive(Default)]
+        struct ProcessMemoryCountersEx {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+            private_usage: usize,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentThread() -> isize;
+            fn GetCurrentProcess() -> isize;
+            fn QueryThreadCycleTime(thread: isize, cycle_time: *mut u64) -> i32;
+            fn GetThreadTimes(
+                thread: isize,
+                creation: *mut u64,
+                exit: *mut u64,
+                kernel: *mut u64,
+                user: *mut u64,
+            ) -> i32;
+            fn K32GetProcessMemoryInfo(
+                process: isize,
+                counters: *mut ProcessMemoryCountersEx,
+                cb: u32,
+            ) -> i32;
+        }
+
+        pub fn thread_cycles() -> u64 {
+            let mut cycles = 0u64;
+            unsafe {
+                QueryThreadCycleTime(GetCurrentThread(), &mut cycles);
+            }
+            cycles
+        }
+
+        /// Returns (kernel_us, user_us) for the current thread.
+        pub fn thread_cpu_us() -> u64 {
+            let (mut c, mut e, mut k, mut u) = (0u64, 0u64, 0u64, 0u64);
+            unsafe {
+                if GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) != 0 {
+                    // FILETIME is in 100-nanosecond intervals
+                    (k + u) / 10
+                } else {
+                    0
+                }
+            }
+        }
+
+        /// Returns (working_set_bytes, private_bytes).
+        pub fn process_memory_bytes() -> (u64, u64) {
+            let mut pmc = ProcessMemoryCountersEx {
+                cb: std::mem::size_of::<ProcessMemoryCountersEx>() as u32,
+                ..Default::default()
+            };
+            unsafe {
+                if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+                    (pmc.working_set_size as u64, pmc.private_usage as u64)
+                } else {
+                    (0, 0)
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    mod win_perf {
+        pub fn thread_cycles() -> u64 { 0 }
+        pub fn thread_cpu_us() -> u64 { 0 }
+        pub fn process_memory_bytes() -> (u64, u64) { (0, 0) }
+    }
+
+    struct BenchRow {
+        name: &'static str,
+        wall_ms: f64,
+        cpu_ms: f64,
+        mcycles: f64,
+        eff_mhz: f64,
+        allocs: f64,
+        churn_kb: f64,
+        retained_kb: f64,
+        cpu_pct_at_tick: Option<f64>,
+        ws_mb: f64,
+        priv_mb: f64,
+    }
+
+    fn measure<R>(
+        name: &'static str,
+        iters: u32,
+        tick_secs: Option<f64>,
+        mut f: impl FnMut() -> R,
+    ) -> BenchRow {
+        if iters > 2 {
+            let _ = std::hint::black_box(f());
+        }
+        let alloc_before = perf_alloc::snapshot();
+        let cpu_before = win_perf::thread_cpu_us();
+        let cycles_before = win_perf::thread_cycles();
+        let t0 = Instant::now();
+
+        for _ in 0..iters {
+            let r = f();
+            std::hint::black_box(r);
+        }
+
+        let elapsed = t0.elapsed();
+        let cycles_after = win_perf::thread_cycles();
+        let cpu_after = win_perf::thread_cpu_us();
+        let alloc_after = perf_alloc::snapshot();
+        let (ws, priv_b) = win_perf::process_memory_bytes();
+
+        let n = iters.max(1) as f64;
+        let wall_us = elapsed.as_secs_f64() * 1_000_000.0 / n;
+        let cpu_us = cpu_after.saturating_sub(cpu_before) as f64 / n;
+        let cycles = cycles_after.saturating_sub(cycles_before) as f64 / n;
+        let eff_mhz = if wall_us > 0.0 { cycles / wall_us } else { 0.0 };
+        let allocs = alloc_after.alloc_count.saturating_sub(alloc_before.alloc_count) as f64 / n;
+        let churn_b = alloc_after.alloc_bytes.saturating_sub(alloc_before.alloc_bytes) as f64 / n;
+        let dealloc_b = alloc_after.dealloc_bytes.saturating_sub(alloc_before.dealloc_bytes) as f64 / n;
+        let retained_b = churn_b - dealloc_b;
+        let cpu_pct_at_tick = tick_secs.map(|s| (cpu_us / (s * 1_000_000.0)) * 100.0);
+
+        BenchRow {
+            name,
+            wall_ms: wall_us / 1000.0,
+            cpu_ms: cpu_us / 1000.0,
+            mcycles: cycles / 1_000_000.0,
+            eff_mhz,
+            allocs,
+            churn_kb: churn_b / 1024.0,
+            retained_kb: retained_b / 1024.0,
+            cpu_pct_at_tick,
+            ws_mb: ws as f64 / (1024.0 * 1024.0),
+            priv_mb: priv_b as f64 / (1024.0 * 1024.0),
+        }
+    }
+
+    fn seed_realistic_db(st: &Storage, days: i64, samples_per_day: i64) {
+        let now = Utc::now().timestamp();
+        let apps = ["code", "chrome", "Telegram", "WindowsTerminal", "explorer", "notepad"];
+        let titles = [
+            "main.rs - memory-log - Visual Studio Code",
+            "Rust Performance Book - Google Chrome",
+            "Saved Messages",
+            "PowerShell 7",
+            "Downloads",
+            "notes.txt - Notepad",
+        ];
+        for d in 0..days {
+            let day_start = now - (d + 1) * 86400;
+            for i in 0..samples_per_day {
+                let idx = (i as usize) % apps.len();
+                let s = Sample {
+                    ts: day_start + i * 15,
+                    app: apps[idx].to_string(),
+                    title: titles[idx].to_string(),
+                    idle_secs: 0,
+                };
+                st.insert_sample(&s).unwrap();
+            }
+            for i in 0..120 {
+                let ts = day_start + i * 300;
+                let sys_s = SystemSample {
+                    ts,
+                    cpu_pct: 18.5,
+                    mem_pct: 52.0,
+                    mem_used_mb: 8400,
+                    net_rx: 120_000,
+                    net_tx: 45_000,
+                    disk_free_gb: Some(120.5),
+                    battery_pct: None,
+                    on_battery: None,
+                    temp_c: None,
+                    uptime_s: 36_000,
+                };
+                let procs = vec![
+                    ProcSample { ts, name: "chrome".into(), cpu_pct: 8.2, mem_mb: 1400 },
+                    ProcSample { ts, name: "code".into(), cpu_pct: 5.1, mem_mb: 900 },
+                    ProcSample { ts, name: "svchost".into(), cpu_pct: 1.2, mem_mb: 300 },
+                ];
+                st.insert_system(&sys_s, &procs).unwrap();
+            }
+        }
+        for i in 0..100 {
+            st.insert_clip(&ClipEntry {
+                ts: now - i * 600,
+                app: "code".into(),
+                text: format!("clipboard snippet #{i} for search and memory profiling"),
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn profile_hot_paths_and_memory() {
+        let dir = std::env::temp_dir().join(format!("ml_perf_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("memory-log.db");
+
+        let mut rows: Vec<BenchRow> = Vec::new();
+        let (ws0, priv0) = win_perf::process_memory_bytes();
+
+        // 1. Collector primitives
+        rows.push(measure("idle_seconds() [3s]", 200, Some(3.0), || idle_seconds()));
+        rows.push(measure("interactive_desktop() [3s]", 50, Some(3.0), || interactive_desktop()));
+
+        let mut win_col = ml_collector::default_collector();
+        rows.push(measure("ActiveWindow::sample() [3s]", 50, Some(3.0), || win_col.sample()));
+
+        // 2. SystemCollector (cold + 10s tick)
+        let mut sys_col_opt: Option<SystemCollector> = None;
+        rows.push(measure("SystemCollector::new() [cold]", 1, None, || {
+            let c = SystemCollector::new();
+            sys_col_opt = Some(c);
+        }));
+        let mut sys_col = sys_col_opt.unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        rows.push(measure("SystemCollector::snapshot() [10s]", 5, Some(10.0), || sys_col.snapshot()));
+        drop(sys_col);
+
+        // 3. LiveSystemProbe (cold + snapshot)
+        let mut live_opt: Option<LiveSystemProbe> = None;
+        rows.push(measure("LiveSystemProbe::new() [cold]", 1, None, || {
+            live_opt = Some(LiveSystemProbe::new());
+        }));
+        let mut live = live_opt.unwrap();
+        rows.push(measure("LiveSystemProbe::snapshot() [ui]", 5, Some(2.0), || live.snapshot()));
+        drop(live);
+
+        // 4. Categorizer
+        let mut cat_opt: Option<Categorizer> = None;
+        rows.push(measure("Categorizer::with_defaults()", 1, None, || {
+            cat_opt = Some(Categorizer::with_defaults());
+        }));
+        let cat = cat_opt.unwrap();
+        rows.push(measure("Categorizer::categorize() x1000", 10, None, || {
+            let mut acc = 0usize;
+            for i in 0..1000 {
+                let c = cat.categorize(
+                    if i % 2 == 0 { "chrome" } else { "code" },
+                    "Rust Performance Book - YouTube",
+                );
+                acc += c as usize;
+            }
+            acc
+        }));
+
+        // 5. Storage & AppState with 7 days * 1500 samples = 10,500 samples
+        let state = AppState::open(&db_path, None).unwrap();
+        {
+            let st = state.storage.lock().unwrap();
+            seed_realistic_db(&st, 7, 1500);
+        }
+
+        rows.push(measure("Storage::recording_settings() [3s]", 200, Some(3.0), || {
+            state.storage.lock().unwrap().recording_settings().unwrap()
+        }));
+        let sample_ts = Utc::now().timestamp();
+        rows.push(measure("Storage::insert_sample() [3s]", 50, Some(3.0), || {
+            state
+                .storage
+                .lock()
+                .unwrap()
+                .insert_sample(&Sample {
+                    ts: sample_ts,
+                    app: "code".into(),
+                    title: "tests.rs - memory-log".into(),
+                    idle_secs: 0,
+                })
+                .unwrap()
+        }));
+        rows.push(measure("AppState::status() [5s]", 100, Some(5.0), || state.status().unwrap()));
+
+        let yesterday = (Utc::now() - ChronoDuration::days(1)).format("%Y-%m-%d").to_string();
+        let month_start = Utc::now().format("%Y-%m-01").to_string();
+
+        rows.push(measure("AppState::day_summary() [1.5k]", 10, Some(15.0), || {
+            state.day_summary(Some(&yesterday)).unwrap()
+        }));
+        rows.push(measure("AppState::week_overview() [7d]", 5, None, || {
+            state.week_overview().unwrap()
+        }));
+        rows.push(measure("AppState::calendar_heatmap() [30d]", 3, None, || {
+            state.calendar_heatmap(&month_start, None).unwrap()
+        }));
+        rows.push(measure("AppState::search() [10.5k rows]", 20, None, || {
+            state.search("memory").unwrap()
+        }));
+
+        let (ws1, priv1) = win_perf::process_memory_bytes();
+
+        println!("\n=== MEMORY LOG PERFORMANCE & RESOURCE PROFILE ===");
+        println!(
+            "Process RAM: start WS={:.2} MB / Priv={:.2} MB -> end WS={:.2} MB / Priv={:.2} MB",
+            ws0 as f64 / 1048576.0,
+            priv0 as f64 / 1048576.0,
+            ws1 as f64 / 1048576.0,
+            priv1 as f64 / 1048576.0,
+        );
+        println!(
+            "{:<38} | {:>8} | {:>8} | {:>8} | {:>7} | {:>9} | {:>9} | {:>10} | {:>7}",
+            "Function [tick]", "Wall(ms)", "CPU(ms)", "MCyc", "EffMHz", "Allocs#", "Churn(KB)", "Retain(KB)", "CPU%@tick"
+        );
+        println!("{}", "-".repeat(122));
+        for r in &rows {
+            let pct = match r.cpu_pct_at_tick {
+                Some(p) => format!("{p:>8.4}%"),
+                None => "       - ".to_string(),
+            };
+            println!(
+                "{:<38} | {:>8.3} | {:>8.3} | {:>8.3} | {:>7.1} | {:>9.1} | {:>9.2} | {:>10.2} | {}",
+                r.name,
+                r.wall_ms,
+                r.cpu_ms,
+                r.mcycles,
+                r.eff_mhz,
+                r.allocs,
+                r.churn_kb,
+                r.retained_kb,
+                pct
+            );
+        }
+        println!(
+            "Last snapshot RAM: WS={:.2} MB, Private={:.2} MB",
+            rows.last().map(|r| r.ws_mb).unwrap_or(0.0),
+            rows.last().map(|r| r.priv_mb).unwrap_or(0.0),
+        );
+
+        drop(state);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

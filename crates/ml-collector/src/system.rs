@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use ml_core::{ProcSample, SystemSample};
 use serde::Serialize;
-use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// Сколько программ с высокой нагрузкой по процессору и по памяти сохраняем за один снимок.
 const TOP_PROCS: usize = 5;
@@ -21,7 +22,11 @@ impl SystemCollector {
         let mut sys = System::new();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::new().with_cpu().with_memory(),
+        );
         Self {
             sys,
             networks: Networks::new_with_refreshed_list(),
@@ -34,7 +39,11 @@ impl SystemCollector {
         let ts = chrono::Utc::now().timestamp();
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::new().with_cpu().with_memory(),
+        );
         self.networks.refresh();
         self.disks.refresh();
 
@@ -78,28 +87,54 @@ impl SystemCollector {
 
     fn top_procs(&self, ts: i64) -> Vec<ProcSample> {
         let cores = self.sys.cpus().len().max(1) as f32;
-        let mut agg: HashMap<String, (f32, u64)> = HashMap::new();
-        for p in self.sys.processes().values() {
-            let name = p.name().to_string_lossy().trim_end_matches(".exe").to_string();
-            if name == "System Idle Process" {
+        let procs = self.sys.processes();
+        let mut agg: HashMap<String, (f32, u64)> = HashMap::with_capacity(procs.len() / 2);
+        for p in procs.values() {
+            let raw = p.name().to_string_lossy();
+            let trimmed = raw.strip_suffix(".exe").unwrap_or(&raw);
+            if trimmed == "System Idle Process" {
                 continue;
             }
-            let e = agg.entry(name).or_insert((0.0, 0));
-            e.0 += p.cpu_usage() / cores;
-            e.1 += p.memory();
+            let cpu = p.cpu_usage() / cores;
+            let mem = p.memory();
+            if let Some(e) = agg.get_mut(trimmed) {
+                e.0 += cpu;
+                e.1 += mem;
+            } else {
+                agg.insert(trimmed.to_owned(), (cpu, mem));
+            }
         }
-        let mut all: Vec<(String, f32, u64)> = agg.into_iter().map(|(n, (c, m))| (n, c, m)).collect();
-
-        let mut keep: HashSet<String> = HashSet::new();
-        all.sort_by(|a, b| b.1.total_cmp(&a.1));
-        keep.extend(all.iter().take(TOP_PROCS).map(|p| p.0.clone()));
-        all.sort_by(|a, b| b.2.cmp(&a.2));
-        keep.extend(all.iter().take(TOP_PROCS).map(|p| p.0.clone()));
+        let all: Vec<(String, f32, u64)> = agg.into_iter().map(|(n, (c, m))| (n, c, m)).collect();
+        let mut selected = vec![false; all.len()];
+        mark_top_k(&all, TOP_PROCS, &mut selected, |a, b| a.1.total_cmp(&b.1));
+        mark_top_k(&all, TOP_PROCS, &mut selected, |a, b| a.2.cmp(&b.2));
 
         all.into_iter()
-            .filter(|p| keep.contains(&p.0))
-            .map(|(name, cpu, mem)| ProcSample { ts, name, cpu_pct: cpu, mem_mb: (mem / (1024 * 1024)) as u32 })
+            .enumerate()
+            .filter(|(i, _)| selected[*i])
+            .map(|(_, (name, cpu, mem))| ProcSample {
+                ts,
+                name,
+                cpu_pct: cpu,
+                mem_mb: (mem / (1024 * 1024)) as u32,
+            })
             .collect()
+    }
+}
+
+fn mark_top_k<T>(items: &[T], k: usize, selected: &mut [bool], cmp: impl Fn(&T, &T) -> Ordering) {
+    let mut top: Vec<usize> = Vec::with_capacity(k + 1);
+    for (i, item) in items.iter().enumerate() {
+        let pos = top.partition_point(|&idx| cmp(&items[idx], item) == Ordering::Greater);
+        if pos < k {
+            top.insert(pos, i);
+            if top.len() > k {
+                top.pop();
+            }
+        }
+    }
+    for idx in top {
+        selected[idx] = true;
     }
 }
 
@@ -141,6 +176,9 @@ const PROTECTED_PROCESSES: &[&str] = &[
 pub struct LiveSystemProbe {
     sys: System,
     disks: Disks,
+    os_name: String,
+    host_name: String,
+    cpu_brand: String,
 }
 
 impl LiveSystemProbe {
@@ -148,32 +186,51 @@ impl LiveSystemProbe {
         let mut sys = System::new();
         sys.refresh_cpu_all();
         sys.refresh_memory();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        Self { sys, disks: Disks::new_with_refreshed_list() }
+        let proc_kind = ProcessRefreshKind::new()
+            .with_cpu()
+            .with_memory()
+            .with_exe(UpdateKind::OnlyIfNotSet);
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind);
+        let os_name = System::long_os_version().unwrap_or_else(|| "Windows".into());
+        let host_name = System::host_name().unwrap_or_default();
+        let cpu_brand = sys.cpus().first().map(|c| c.brand().trim().to_string()).unwrap_or_default();
+        Self { sys, disks: Disks::new_with_refreshed_list(), os_name, host_name, cpu_brand }
     }
 
     pub fn snapshot(&mut self) -> LiveSystem {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        let proc_kind = ProcessRefreshKind::new()
+            .with_cpu()
+            .with_memory()
+            .with_exe(UpdateKind::OnlyIfNotSet);
+        self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind);
         self.disks.refresh_list();
         self.disks.refresh();
 
         let cores = self.sys.cpus().len().max(1);
-        let mut agg: HashMap<String, (usize, f32, u64, String)> = HashMap::new();
-        for p in self.sys.processes().values() {
-            let name = p.name().to_string_lossy().trim_end_matches(".exe").to_string();
-            if name == "System Idle Process" {
+        let procs = self.sys.processes();
+        let mut agg: HashMap<String, (usize, f32, u64, String)> = HashMap::with_capacity(procs.len() / 2);
+        for p in procs.values() {
+            let raw = p.name().to_string_lossy();
+            let trimmed = raw.strip_suffix(".exe").unwrap_or(&raw);
+            if trimmed == "System Idle Process" {
                 continue;
             }
-            let entry = agg.entry(name).or_insert_with(|| (0, 0.0, 0, String::new()));
-            entry.0 += 1;
-            entry.1 += p.cpu_usage() / cores as f32;
-            entry.2 += p.memory();
-            if entry.3.is_empty() {
-                if let Some(exe) = p.exe() {
-                    entry.3 = exe.display().to_string();
+            let cpu = p.cpu_usage() / cores as f32;
+            let mem = p.memory();
+            if let Some(entry) = agg.get_mut(trimmed) {
+                entry.0 += 1;
+                entry.1 += cpu;
+                entry.2 += mem;
+                if entry.3.is_empty() {
+                    if let Some(exe) = p.exe() {
+                        entry.3 = exe.display().to_string();
+                    }
                 }
+            } else {
+                let exe = p.exe().map(|e| e.display().to_string()).unwrap_or_default();
+                agg.insert(trimmed.to_owned(), (1, cpu, mem, exe));
             }
         }
         let mut processes: Vec<LiveProc> = agg.into_iter()
@@ -198,11 +255,10 @@ impl LiveSystemProbe {
             .collect();
         disks.sort_by(|a, b| a.mount.cmp(&b.mount));
 
-        let cpu_brand = self.sys.cpus().first().map(|c| c.brand().trim().to_string()).unwrap_or_default();
         LiveSystem {
-            os_name: System::long_os_version().unwrap_or_else(|| "Windows".into()),
-            host_name: System::host_name().unwrap_or_default(),
-            cpu_brand,
+            os_name: self.os_name.clone(),
+            host_name: self.host_name.clone(),
+            cpu_brand: self.cpu_brand.clone(),
             cpu_cores: cores,
             total_mem_mb: (self.sys.total_memory() / (1024 * 1024)) as u32,
             used_mem_mb: (self.sys.used_memory() / (1024 * 1024)) as u32,

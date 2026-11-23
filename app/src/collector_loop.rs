@@ -25,7 +25,6 @@ const MAX_LOGGED_ERRORS: u32 = 20;
 /// Фоновый поток: пишет активное окно и состояние ПК в базу.
 pub fn spawn(state: Arc<AppState>) {
     thread::spawn(move || {
-        ml_collector::disable_power_throttling();
         let mut windows = ml_collector::default_collector();
         let mut system = SystemCollector::new();
         let mut clipboard = ClipboardWatcher::new();
@@ -52,10 +51,9 @@ pub fn spawn(state: Arc<AppState>) {
                 log::info(&format!("сборщик не работал {} сек (сон ПК или замедление Windows)", slept.as_secs()));
             }
             let mut result = (|| -> Result<(), String> {
-                // Один замок для записи окна и постановки на паузу сохраняет порядок событий.
-                let storage = state.storage.lock().map_err(|e| e.to_string())?;
-                let settings = storage.recording_settings().map_err(|e| e.to_string())?;
+                let settings = state.cached_recording_settings();
                 if last_prune.is_none_or(|last| last.elapsed() >= PRUNE_EVERY) || last_retention != settings.retention_days {
+                    let storage = state.storage.lock().map_err(|e| e.to_string())?;
                     let now = Utc::now().timestamp();
                     if settings.retention_days > 0 {
                         let cutoff = now - i64::from(settings.retention_days) * 86400;
@@ -91,6 +89,12 @@ pub fn spawn(state: Arc<AppState>) {
                 let ts = sample.as_ref().map_or_else(|| Utc::now().timestamp(), |s| s.ts);
                 let inactive = !interactive || excluded || idle;
                 state.inactive.store(inactive, Ordering::Relaxed);
+                // Один замок для записи окна и постановки на паузу сохраняет порядок событий.
+                let storage = state.storage.lock().map_err(|e| e.to_string())?;
+                if state.is_paused() {
+                    clipboard.skip();
+                    return Ok(());
+                }
                 if (!interactive || excluded || interrupted) && !break_recorded {
                     storage.insert_activity_break(ts).map_err(|e| e.to_string())?;
                     break_recorded = true;
@@ -132,12 +136,12 @@ pub fn spawn(state: Arc<AppState>) {
                         crate::sys_tools::execute_power_action(&action);
                     }
                 }
+                let settings = state.cached_recording_settings();
+                procs.retain(|proc| !settings.excludes(&proc.name));
                 result = state.storage.lock().map_err(|e| e.to_string()).and_then(|st| {
                     if state.is_paused() {
                         return Ok(());
                     }
-                    let settings = st.recording_settings().map_err(|e| e.to_string())?;
-                    procs.retain(|proc| !settings.excludes(&proc.name));
                     st.insert_system(&sample, &procs).map_err(|e| e.to_string())
                 });
             }

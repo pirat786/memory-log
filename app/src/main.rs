@@ -11,6 +11,63 @@ mod state;
 mod sys_tools;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod perf_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    pub struct CountingAllocator;
+
+    thread_local! {
+        static ALLOC_BYTES: Cell<u64> = const { Cell::new(0) };
+        static DEALLOC_BYTES: Cell<u64> = const { Cell::new(0) };
+        static ALLOC_COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct AllocSnapshot {
+        pub alloc_bytes: u64,
+        pub dealloc_bytes: u64,
+        pub alloc_count: u64,
+    }
+
+    pub fn snapshot() -> AllocSnapshot {
+        AllocSnapshot {
+            alloc_bytes: ALLOC_BYTES.try_with(|c| c.get()).unwrap_or(0),
+            dealloc_bytes: DEALLOC_BYTES.try_with(|c| c.get()).unwrap_or(0),
+            alloc_count: ALLOC_COUNT.try_with(|c| c.get()).unwrap_or(0),
+        }
+    }
+
+    unsafe impl GlobalAlloc for CountingAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let ptr = System.alloc(layout);
+            if !ptr.is_null() {
+                let _ = ALLOC_BYTES.try_with(|c| c.set(c.get().saturating_add(layout.size() as u64)));
+                let _ = ALLOC_COUNT.try_with(|c| c.set(c.get().saturating_add(1)));
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            let _ = DEALLOC_BYTES.try_with(|c| c.set(c.get().saturating_add(layout.size() as u64)));
+            System.dealloc(ptr, layout);
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let new_ptr = System.realloc(ptr, layout, new_size);
+            if !new_ptr.is_null() {
+                let _ = DEALLOC_BYTES.try_with(|c| c.set(c.get().saturating_add(layout.size() as u64)));
+                let _ = ALLOC_BYTES.try_with(|c| c.set(c.get().saturating_add(new_size as u64)));
+                let _ = ALLOC_COUNT.try_with(|c| c.set(c.get().saturating_add(1)));
+            }
+            new_ptr
+        }
+    }
+
+    #[global_allocator]
+    static GLOBAL: CountingAllocator = CountingAllocator;
+}
 mod tray;
 #[cfg(windows)]
 mod updater;

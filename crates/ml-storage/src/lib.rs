@@ -125,6 +125,8 @@ impl Storage {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -2000)?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
         let applied: usize = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
             let tx = conn.transaction()?;
@@ -155,10 +157,10 @@ impl Storage {
     }
 
     pub fn insert_sample(&self, s: &Sample) -> Result<()> {
-        self.conn.execute(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO samples (ts, app, title, idle_secs) VALUES (?1, ?2, ?3, ?4)",
-            params![s.ts, s.app, s.title, s.idle_secs],
         )?;
+        stmt.execute(params![s.ts, s.app, s.title, s.idle_secs])?;
         Ok(())
     }
 
@@ -171,14 +173,15 @@ impl Storage {
     }
 
     fn insert_activity_event(&self, ts: Timestamp, kind: u8) -> Result<()> {
-        self.conn.execute("INSERT INTO samples (ts, app, title, is_break) VALUES (?1, '', '', ?2)", params![ts, kind])?;
+        let mut stmt = self.conn.prepare_cached("INSERT INTO samples (ts, app, title, is_break) VALUES (?1, '', '', ?2)")?;
+        stmt.execute(params![ts, kind])?;
         Ok(())
     }
 
     pub fn activity_between(&self, from: Timestamp, to: Timestamp) -> Result<Vec<ActivityEvent>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT ts, app, title, idle_secs, is_break FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts, rowid")?;
+            .prepare_cached("SELECT ts, app, title, idle_secs, is_break FROM samples WHERE ts >= ?1 AND ts < ?2 ORDER BY ts, rowid")?;
         let rows = stmt.query_map(params![from, to], |row| match row.get::<_, u8>(4)? {
             0 => Ok(ActivityEvent::Window(read_sample(row)?)),
             IDLE_EVENT => Ok(ActivityEvent::Idle(row.get(0)?)),
@@ -197,11 +200,12 @@ impl Storage {
     }
 
     pub fn recording_settings(&self) -> Result<RecordingSettings> {
-        Ok(self.conn.query_row(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT clipboard_enabled, retention_days, excluded_apps FROM activity_settings WHERE id = 1",
-            [],
-            |r| Ok(RecordingSettings { clipboard_enabled: r.get(0)?, retention_days: r.get(1)?, excluded_apps: r.get(2)? }),
-        )?)
+        )?;
+        Ok(stmt.query_row([], |r| {
+            Ok(RecordingSettings { clipboard_enabled: r.get(0)?, retention_days: r.get(1)?, excluded_apps: r.get(2)? })
+        })?)
     }
 
     pub fn set_recording_settings(&self, settings: &RecordingSettings) -> Result<()> {
@@ -260,7 +264,7 @@ impl Storage {
     }
 
     pub fn last_sample(&self) -> Result<Option<Sample>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT ts, app, title, idle_secs FROM samples WHERE is_break = 0 ORDER BY ts DESC, rowid DESC LIMIT 1",
         )?;
         let mut rows = stmt.query_map([], read_sample)?;
@@ -269,11 +273,11 @@ impl Storage {
 
     /// Одинаковый текст не дублируется: повторное копирование поднимает старую запись наверх.
     pub fn insert_clip(&self, c: &ClipEntry) -> Result<()> {
-        self.conn.execute(
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO clipboard (ts, app, text) VALUES (?1, ?2, ?3)
              ON CONFLICT(text) DO UPDATE SET ts = excluded.ts, app = excluded.app",
-            params![c.ts, c.app, c.text],
         )?;
+        stmt.execute(params![c.ts, c.app, c.text])?;
         Ok(())
     }
 
@@ -323,19 +327,21 @@ impl Storage {
     /// Снимок ПК и топ программ записываются одной транзакцией.
     pub fn insert_system(&self, s: &SystemSample, procs: &[ProcSample]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO system_samples (ts, cpu, mem, mem_used_mb, net_rx, net_tx, disk_free_gb, battery_pct, on_battery, temp_c, uptime_s)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
+        {
+            let mut sys_stmt = tx.prepare_cached(
+                "INSERT INTO system_samples (ts, cpu, mem, mem_used_mb, net_rx, net_tx, disk_free_gb, battery_pct, on_battery, temp_c, uptime_s)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+            sys_stmt.execute(params![
                 s.ts, s.cpu_pct, s.mem_pct, s.mem_used_mb, s.net_rx as i64, s.net_tx as i64,
                 s.disk_free_gb, s.battery_pct, s.on_battery, s.temp_c, s.uptime_s as i64
-            ],
-        )?;
-        for p in procs {
-            tx.execute(
+            ])?;
+            let mut proc_stmt = tx.prepare_cached(
                 "INSERT INTO proc_samples (ts, name, cpu, mem_mb) VALUES (?1, ?2, ?3, ?4)",
-                params![p.ts, p.name, p.cpu_pct, p.mem_mb],
             )?;
+            for p in procs {
+                proc_stmt.execute(params![p.ts, p.name, p.cpu_pct, p.mem_mb])?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -407,20 +413,26 @@ impl Storage {
         if q.is_empty() {
             return Ok(vec![]);
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples WHERE is_break = 0 AND idle_secs < ?1
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT app, title, MIN(ts), MAX(ts), COUNT(*) FROM samples
+             WHERE is_break = 0 AND idle_secs < ?1 AND app != ?2
              GROUP BY app, title ORDER BY MAX(ts) DESC",
         )?;
-        let rows = stmt.query_map([LEGACY_IDLE_SECS], |r| {
+        let rows = stmt.query_map(params![LEGACY_IDLE_SECS, HIDDEN_APP], |r| {
             Ok(SearchHit { app: r.get(0)?, title: r.get(1)?, first_ts: r.get(2)?, last_ts: r.get(3)?, count: r.get(4)? })
         })?;
-        let mut out = Vec::new();
+        let q_ascii = q.is_ascii();
+        let q_bytes = q.as_bytes();
+        let mut out = Vec::with_capacity(limit.min(100));
         for hit in rows {
             let hit = hit?;
-            if hit.app == HIDDEN_APP {
-                continue;
-            }
-            if hit.app.to_lowercase().contains(&q) || hit.title.to_lowercase().contains(&q) {
+            let matched = if q_ascii && hit.app.is_ascii() && hit.title.is_ascii() {
+                hit.app.as_bytes().windows(q_bytes.len()).any(|w| w.eq_ignore_ascii_case(q_bytes))
+                    || hit.title.as_bytes().windows(q_bytes.len()).any(|w| w.eq_ignore_ascii_case(q_bytes))
+            } else {
+                hit.app.to_lowercase().contains(&q) || hit.title.to_lowercase().contains(&q)
+            };
+            if matched {
                 out.push(hit);
                 if out.len() >= limit {
                     break;

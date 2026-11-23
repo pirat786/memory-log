@@ -39,17 +39,25 @@ pub fn interactive_desktop() -> bool {
     }
 }
 
-pub struct ActiveWindowCollector;
+pub struct ActiveWindowCollector {
+    last_hwnd: isize,
+    last_pid: u32,
+    last_app: String,
+}
 
 impl ActiveWindowCollector {
     pub fn new() -> Self {
-        Self
+        Self {
+            last_hwnd: 0,
+            last_pid: 0,
+            last_app: String::new(),
+        }
     }
 }
 
 impl Collector for ActiveWindowCollector {
     fn sample(&mut self) -> Option<Sample> {
-        let (app, title) = unsafe { foreground_window()? };
+        let (app, title) = unsafe { self.foreground_window()? };
         Some(Sample {
             ts: chrono::Utc::now().timestamp(),
             app,
@@ -59,18 +67,31 @@ impl Collector for ActiveWindowCollector {
     }
 }
 
-unsafe fn foreground_window() -> Option<(String, String)> {
-    let hwnd = GetForegroundWindow();
-    if hwnd == HWND::default() {
-        return None;
+impl ActiveWindowCollector {
+    unsafe fn foreground_window(&mut self) -> Option<(String, String)> {
+        let hwnd = GetForegroundWindow();
+        if hwnd == HWND::default() {
+            return None;
+        }
+
+        let mut buf = [0u16; 512];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let hwnd_raw = hwnd.0 as isize;
+        let app = if hwnd_raw == self.last_hwnd && pid == self.last_pid && !self.last_app.is_empty() {
+            self.last_app.clone()
+        } else {
+            let resolved = process_name(pid).unwrap_or_else(|| "unknown".to_string());
+            self.last_hwnd = hwnd_raw;
+            self.last_pid = pid;
+            self.last_app = resolved.clone();
+            resolved
+        };
+        Some((app, title))
     }
-
-    let mut buf = [0u16; 512];
-    let n = GetWindowTextW(hwnd, &mut buf);
-    let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-
-    let app = window_app(hwnd).unwrap_or_else(|| "unknown".to_string());
-    Some((app, title))
 }
 
 pub(crate) unsafe fn window_app(hwnd: HWND) -> Option<String> {
