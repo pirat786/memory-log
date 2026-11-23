@@ -513,4 +513,17 @@ $("dropReveal").onclick = () => {
   syncDropControls();
   drawTimer();
   refreshState();
+  try {
+    const open = await invoke("pet_open");
+    $("petToggle").style.opacity = open ? "1" : "0.45";
+  } catch {}
 })();
+
+$("petToggle").onclick = async () => {
+  const open = await invoke("toggle_pet");
+  $("petToggle").style.opacity = open ? "1" : "0.45";
+};
+
+listen("pet-state", (e) => {
+  $("petToggle").style.opacity = e.payload ? "1" : "0.45";
+});

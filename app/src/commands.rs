@@ -318,6 +318,26 @@ pub fn widget_resize(app: AppHandle, expanded: bool) {
 }
 
 #[tauri::command]
+pub async fn toggle_pet(app: AppHandle) -> bool {
+    crate::window::toggle_pet(&app)
+}
+
+#[tauri::command]
+pub fn pet_open(app: AppHandle) -> bool {
+    app.get_webview_window("pet").is_some()
+}
+
+#[tauri::command]
+pub fn pet_bounds(app: AppHandle) -> (i32, i32, i32) {
+    crate::window::pet_bounds(&app)
+}
+
+#[tauri::command]
+pub fn pet_move(app: AppHandle, x: i32, y: i32) {
+    crate::window::move_pet(&app, x, y);
+}
+
+#[tauri::command]
 pub async fn open_main_window(app: AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {

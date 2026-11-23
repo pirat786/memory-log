@@ -84,8 +84,16 @@ fn language_file(db_path: &Path) -> PathBuf {
     db_path.with_file_name("language.txt")
 }
 
-fn widget_file(db_path: &Path) -> PathBuf {
-    db_path.with_file_name("widget.txt")
+fn read_flag(db_path: &Path, name: &str) -> bool {
+    fs::read_to_string(db_path.with_file_name(name))
+        .ok()
+        .is_some_and(|s| s.trim() == "1")
+}
+
+fn write_flag(db_path: &Path, name: &str, enabled: bool) {
+    if let Err(e) = fs::write(db_path.with_file_name(name), if enabled { "1" } else { "0" }) {
+        log::info(&format!("не удалось сохранить {name}: {e}"));
+    }
 }
 
 fn initial_language(db_path: &Path) -> String {
@@ -112,15 +120,19 @@ impl AppState {
     }
 
     pub fn widget_enabled(&self) -> bool {
-        fs::read_to_string(widget_file(&self.db_path))
-            .ok()
-            .is_some_and(|s| s.trim() == "1")
+        read_flag(&self.db_path, "widget.txt")
     }
 
     pub fn set_widget_enabled(&self, enabled: bool) {
-        if let Err(e) = fs::write(widget_file(&self.db_path), if enabled { "1" } else { "0" }) {
-            log::info(&format!("не удалось сохранить состояние виджета: {e}"));
-        }
+        write_flag(&self.db_path, "widget.txt", enabled);
+    }
+
+    pub fn pet_enabled(&self) -> bool {
+        read_flag(&self.db_path, "pet.txt")
+    }
+
+    pub fn set_pet_enabled(&self, enabled: bool) {
+        write_flag(&self.db_path, "pet.txt", enabled);
     }
 
     /// Подписи пунктов трея на текущем языке.

@@ -107,3 +107,70 @@ pub fn resize_widget(app: &AppHandle, expanded: bool) {
         }
     }
 }
+
+const PET_W: f64 = 104.0;
+const PET_H: f64 = 74.0;
+
+pub fn pet_bounds(app: &AppHandle) -> (i32, i32, i32) {
+    let Some(w) = app.get_webview_window("pet") else { return (0, 800, 500) };
+    let Ok(Some(monitor)) = w.current_monitor().or_else(|_| w.primary_monitor()) else {
+        return (0, 800, 500);
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let min_x = area.position.x;
+    let max_x = area.position.x + area.size.width as i32 - (PET_W * scale).round() as i32;
+    let y = area.position.y + area.size.height as i32 - (PET_H * scale).round() as i32;
+    (min_x, max_x.max(min_x + 1), y)
+}
+
+pub fn open_pet(app: &AppHandle) -> bool {
+    if app.get_webview_window("pet").is_some() {
+        return true;
+    }
+    match WebviewWindowBuilder::new(app, "pet", WebviewUrl::App("pet.html".into()))
+        .title("Memory Log Pet")
+        .inner_size(PET_W, PET_H)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(false)
+        .focused(false)
+        .additional_browser_args(BROWSER_ARGS)
+        .build()
+    {
+        Ok(w) => {
+            let (min_x, max_x, y) = pet_bounds(app);
+            let start_x = min_x + ((max_x - min_x) / 2);
+            let _ = w.set_position(PhysicalPosition::new(start_x, y));
+            let _ = w.show();
+            true
+        }
+        Err(e) => {
+            log::info(&format!("не удалось открыть питомца: {e}"));
+            false
+        }
+    }
+}
+
+pub fn toggle_pet(app: &AppHandle) -> bool {
+    let open = if let Some(w) = app.get_webview_window("pet") {
+        let _ = w.close();
+        false
+    } else {
+        open_pet(app)
+    };
+    if let Some(state) = app.try_state::<Arc<AppState>>() {
+        state.set_pet_enabled(open);
+    }
+    let _ = app.emit("pet-state", open);
+    open
+}
+
+pub fn move_pet(app: &AppHandle, x: i32, y: i32) {
+    if let Some(w) = app.get_webview_window("pet") {
+        let _ = w.set_position(PhysicalPosition::new(x, y));
+    }
+}

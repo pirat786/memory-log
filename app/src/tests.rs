@@ -531,7 +531,26 @@ mod state_widget {
         state2.set_widget_enabled(false);
         assert!(!state2.widget_enabled());
 
+        assert!(!state2.pet_enabled());
+        state2.set_pet_enabled(true);
+        assert!(state2.pet_enabled());
+        let state3 = AppState::open(&db_path, None).unwrap();
+        assert!(state3.pet_enabled());
+
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn capabilities_include_all_windows() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let windows = cap["windows"].as_array().unwrap();
+        for label in ["main", "popup", "widget", "pet"] {
+            assert!(
+                windows.iter().any(|w| w.as_str() == Some(label)),
+                "в capabilities/default.json нет окна {label}"
+            );
+        }
     }
 }
 

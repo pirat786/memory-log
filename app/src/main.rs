@@ -73,9 +73,13 @@ fn main() {
             cloud::spawn(state.clone());
             tray::build(app, state.clone())?;
             let restore_widget = state.widget_enabled();
+            let restore_pet = state.pet_enabled();
             app.manage(state);
             if restore_widget {
                 window::open_widget(app.handle());
+            }
+            if restore_pet {
+                window::open_pet(app.handle());
             }
 
             // Ctrl+Alt+стрелки, а не просто Ctrl+стрелки: те нужны текстовым редакторам и браузеру.
@@ -143,6 +147,10 @@ fn main() {
             commands::toggle_widget,
             commands::widget_open,
             commands::widget_resize,
+            commands::toggle_pet,
+            commands::pet_open,
+            commands::pet_bounds,
+            commands::pet_move,
             commands::open_main_window,
             commands::quick_drop,
             commands::quick_drop_cancel,
