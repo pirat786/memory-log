@@ -107,11 +107,15 @@ struct ZipEntryTask {
     len: u64,
 }
 
+fn should_compress(ext: &str, zip_mode: &str) -> bool {
+    zip_mode == "max" || !is_incompressible_ext(ext)
+}
+
 fn zip_options(ext: &str, file_len: u64, zip_mode: &str) -> SimpleFileOptions {
-    let mut opts = if zip_mode == "store" || is_incompressible_ext(ext) {
+    let mut opts = if !should_compress(ext, zip_mode) {
         SimpleFileOptions::default().compression_method(CompressionMethod::Stored)
     } else {
-        let level = if zip_mode == "normal" { 6 } else { 1 };
+        let level = if zip_mode == "max" { 9 } else { 1 };
         SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .compression_level(Some(level))
@@ -184,10 +188,7 @@ pub fn pack_zip(
                 zip_name: name,
                 len,
             };
-            if zip_mode != "store"
-                && len <= PARALLEL_FILE_MAX_BYTES
-                && !is_incompressible_ext(&ext_lower(root))
-            {
+            if len <= PARALLEL_FILE_MAX_BYTES && should_compress(&ext_lower(root), zip_mode) {
                 batch_entries.push(task);
             } else {
                 stream_entries.push(task);
@@ -223,10 +224,7 @@ pub fn pack_zip(
                     zip_name,
                     len,
                 };
-                if zip_mode != "store"
-                    && len <= PARALLEL_FILE_MAX_BYTES
-                    && !is_incompressible_ext(&ext_lower(p))
-                {
+                if len <= PARALLEL_FILE_MAX_BYTES && should_compress(&ext_lower(p), zip_mode) {
                     batch_entries.push(task);
                 } else {
                     stream_entries.push(task);

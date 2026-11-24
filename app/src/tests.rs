@@ -463,18 +463,33 @@ mod quick_files {
     }
 
     #[test]
-    fn zip_modes_store_fast_normal_produce_expected_sizes() {
+    fn zip_modes_fast_and_max_produce_expected_sizes() {
         let dir = TestDir::new();
         let text_file = dir.path().join("repetitive.txt");
-        fs::write(&text_file, "Memory Log compression check line 0123456789\n".repeat(4000)).unwrap();
+        let raw = "Memory Log compression check line 0123456789\n".repeat(4000);
+        fs::write(&text_file, &raw).unwrap();
         let p = vec![text_file.to_string_lossy().into_owned()];
 
-        let store = pack_zip(p.clone(), "store", None).unwrap();
         let fast = pack_zip(p.clone(), "fast", None).unwrap();
-        let normal = pack_zip(p, "normal", None).unwrap();
+        let max = pack_zip(p, "max", None).unwrap();
 
-        assert!(fast.output_bytes < store.output_bytes);
-        assert!(normal.output_bytes <= fast.output_bytes);
+        assert!(fast.output_bytes < raw.len() as u64);
+        assert!(max.output_bytes <= fast.output_bytes);
+    }
+
+    #[test]
+    fn zip_max_mode_compresses_incompressible_extensions() {
+        let dir = TestDir::new();
+        let exe_file = dir.path().join("dummy.exe");
+        let payload = vec![b'A'; 128 * 1024];
+        fs::write(&exe_file, &payload).unwrap();
+        let p = vec![exe_file.to_string_lossy().into_owned()];
+
+        let fast = pack_zip(p.clone(), "fast", None).unwrap();
+        let max = pack_zip(p, "max", None).unwrap();
+
+        assert!(fast.output_bytes >= payload.len() as u64);
+        assert!(max.output_bytes < fast.output_bytes / 10);
     }
 
     #[test]
