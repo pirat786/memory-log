@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, We
 use crate::log;
 use crate::state::AppState;
 
-const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --in-process-gpu --renderer-process-limit=1";
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1";
 
 /// Показывает главное окно. Когда оно закрыто, его веб-часть уничтожена (чтобы в памяти
 /// оставался один процесс), поэтому окно создаётся заново по настройкам из tauri.conf.json.
@@ -33,11 +33,10 @@ const EXPANDED_H: f64 = 330.0;
 fn dock_right_edge(w: &WebviewWindow, width: f64, height: f64) {
     let Ok(Some(monitor)) = w.current_monitor().or_else(|_| w.primary_monitor()) else { return };
     let scale = monitor.scale_factor();
-    let size = monitor.size();
-    let pos = monitor.position();
+    let area = monitor.work_area();
     let margin = if width > COLLAPSED_W { 10.0 } else { 0.0 };
-    let x = pos.x as f64 + size.width as f64 - (width + margin) * scale;
-    let y = pos.y as f64 + (size.height as f64 - height * scale) * 0.45;
+    let x = area.position.x as f64 + area.size.width as f64 - (width + margin) * scale;
+    let y = area.position.y as f64 + (area.size.height as f64 - height * scale) * 0.45;
     let _ = w.set_size(Size::Logical(LogicalSize::new(width, height)));
     let _ = w.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
 }

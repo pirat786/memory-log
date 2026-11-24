@@ -197,7 +197,7 @@
         cat.classList.remove("walk");
         return;
       }
-      const step = isAwake ? 1.5 : 1;
+      const step = isAwake ? 3 : 2;
       x += dir * step;
       if (x >= maxX) {
         x = maxX;
@@ -205,8 +205,8 @@
       } else if (x <= minX) {
         x = minX;
         dir = 1;
-      } else if (!isAwake && !isBusy && Math.random() < 0.008) {
-        pauseTicks = 45;
+      } else if (!isAwake && !isBusy && Math.random() < 0.016) {
+        pauseTicks = 23;
       }
       cat.classList.add("walk");
       cat.classList.toggle("flip", dir < 0);
@@ -216,7 +216,7 @@
         lastSentY = y;
         invoke("pet_move", { x: rx, y });
       }
-    }, 40);
+    }, 80);
 
     cat.onclick = () => {
       cat.classList.add("hop");
