@@ -1,11 +1,13 @@
 mod bg_writer;
 mod pack;
 mod parallel;
-mod solid;
+mod solid_pack;
+mod solid_unpack;
 mod unpack;
 
 pub use pack::pack_zip;
-pub use solid::{pack_solid, pack_solid_with_level, unpack_gz, unpack_solid, unpack_tar_gz, ULTRA_SOLID_ZSTD_LEVEL};
+pub use solid_pack::{pack_solid, pack_solid_with_level, ULTRA_SOLID_ZSTD_LEVEL};
+pub use solid_unpack::{unpack_gz, unpack_solid, unpack_tar_gz};
 pub use unpack::unpack_zip;
 
 use std::collections::HashSet;
@@ -28,6 +30,7 @@ pub(super) const HUGE_BUF_SSD: usize = 4 * 1024 * 1024;
 pub(super) const HUGE_BUF_HDD: usize = 8 * 1024 * 1024;
 pub(super) const HDD_READAHEAD_CHUNKS: usize = 6;
 pub(super) const RECYCLE_MAX_CAP: usize = 16 * 1024 * 1024;
+pub(super) const SOLID_SMALL_FILE_MAX: u64 = 2 * 1024 * 1024;
 const PROBE_SAMPLE_BYTES: usize = 64 * 1024;
 
 pub(super) type MiniResult = Result<(Vec<u8>, u64, usize, Duration, Duration), String>;

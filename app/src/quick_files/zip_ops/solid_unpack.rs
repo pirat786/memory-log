@@ -9,9 +9,10 @@ use std::time::Instant;
 use flate2::read::GzDecoder;
 use tauri::AppHandle;
 
-use super::super::bg_writer::BoundedQueue;
-use super::super::{check_free_space, detect_hdd_mode, UNPACK_BUF_HDD, UNPACK_BUF_SSD};
-use super::SOLID_SMALL_FILE_MAX;
+use super::bg_writer::BoundedQueue;
+use super::{
+    check_free_space, detect_hdd_mode, SOLID_SMALL_FILE_MAX, UNPACK_BUF_HDD, UNPACK_BUF_SSD,
+};
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read};
 use crate::quick_files::{is_cancelled, unique_path, ProgressReporter, QuickFileReport};
 

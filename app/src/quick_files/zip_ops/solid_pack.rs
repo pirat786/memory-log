@@ -9,12 +9,11 @@ use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use walkdir::WalkDir;
 
-use super::super::bg_writer::BgFileWriter;
-use super::super::{
+use super::bg_writer::BgFileWriter;
+use super::{
     check_free_space, detect_hdd_mode, is_incompressible_ext, should_compress_task,
-    unique_entry_name, ZipEntryTask, HUGE_BUF_HDD, HUGE_BUF_SSD,
+    unique_entry_name, ZipEntryTask, HUGE_BUF_HDD, HUGE_BUF_SSD, SOLID_SMALL_FILE_MAX,
 };
-use super::SOLID_SMALL_FILE_MAX;
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read, same_drive};
 use crate::quick_files::{ext_lower, is_cancelled, unique_path, ProgressReporter, QuickFileReport};
 
