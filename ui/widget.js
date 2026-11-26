@@ -16,17 +16,10 @@ let dropStartedAt = 0;
 let dropProgress = { done: 0, total: 0, pct: 0 };
 let dropTimer = null;
 
-let timerSecs = 25 * 60;
-let timerInit = 25 * 60;
-let timerRunning = false;
-let timerEndAt = null;
-let audioCtx = null;
-
 function updateEdgeDot() {
   const dot = $("dot");
   dot.classList.toggle("paused", isPaused);
   dot.classList.toggle("awake", !isPaused && isAwake);
-  dot.classList.toggle("timer", !isPaused && !isAwake && timerRunning);
 }
 
 function schedulePoll() {
@@ -57,7 +50,7 @@ $("edgeTab").addEventListener("click", () => setExpanded(true));
 
 $("panel").addEventListener("mouseenter", () => clearTimeout(leaveTimer));
 $("panel").addEventListener("mouseleave", () => {
-  if (dragActive || dropBusy || document.activeElement === $("timerMins")) return;
+  if (dragActive || dropBusy) return;
   leaveTimer = setTimeout(() => setExpanded(false), 450);
 });
 $("collapse").onclick = () => setExpanded(false);
@@ -68,173 +61,14 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") setExpanded(false);
 });
 
-function switchTab(id) {
-  for (const b of document.querySelectorAll(".seg button")) b.classList.toggle("active", b.dataset.wt === id);
-  for (const paneId of ["timer", "files", "ctrl"]) $("pane-" + paneId).hidden = paneId !== id;
-}
-
-for (const btn of document.querySelectorAll(".seg button")) {
-  btn.onclick = () => switchTab(btn.dataset.wt);
-}
-
-$("timerSound").value = localStorage.getItem("timerSound") || "bell";
-
-function getAudioContext() {
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return null;
-  if (!audioCtx || audioCtx.state === "closed") audioCtx = new Ctx();
-  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-  return audioCtx;
-}
-
-function playTimerSound(kind = $("timerSound").value) {
-  if (kind === "none") return;
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    const tone = (freq, start, dur, type = "sine", gainVal = 0.22) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
-      gain.gain.setValueAtTime(0.001, ctx.currentTime + start);
-      gain.gain.exponentialRampToValueAtTime(gainVal, ctx.currentTime + start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + dur + 0.02);
-    };
-    if (kind === "bell") {
-      tone(880, 0, 0.35, "sine", 0.2);
-      tone(1320, 0.14, 0.45, "sine", 0.18);
-    } else if (kind === "beep") {
-      tone(740, 0, 0.14, "triangle", 0.22);
-      tone(740, 0.2, 0.14, "triangle", 0.22);
-    } else if (kind === "soft") {
-      tone(528, 0, 0.65, "sine", 0.18);
-    }
-  } catch {}
-}
-
-$("timerSound").onchange = () => {
-  localStorage.setItem("timerSound", $("timerSound").value);
-  playTimerSound($("timerSound").value);
-};
-
-function drawTimer() {
-  const m = String(Math.floor(timerSecs / 60)).padStart(2, "0");
-  const s = String(timerSecs % 60).padStart(2, "0");
-  $("timerClock").textContent = `${m}:${s}`;
-  $("timerToggle").textContent = t(timerRunning ? "widget.timer.pause" : "widget.timer.start");
-  $("timerToggle").classList.toggle("on", timerRunning);
-  updateEdgeDot();
-}
-
-setInterval(() => {
-  if (!timerRunning || timerEndAt === null) return;
-  const left = Math.max(0, Math.ceil((timerEndAt - Date.now()) / 1000));
-  if (left > 0) {
-    if (left !== timerSecs) {
-      timerSecs = left;
-      drawTimer();
-    }
-  } else {
-    timerSecs = 0;
-    timerRunning = false;
-    timerEndAt = null;
-    drawTimer();
-    playTimerSound();
-    setExpanded(true);
-    document.querySelector('[data-wt="timer"]').click();
-    $("timerClock").textContent = t("widget.timer.done");
-  }
-}, 250);
-
-for (const btn of document.querySelectorAll("[data-mins]")) {
-  btn.onclick = () => {
-    const mins = Number(btn.dataset.mins);
-    $("timerMins").value = String(mins);
-    timerInit = mins * 60;
-    timerSecs = timerInit;
-    timerRunning = true;
-    timerEndAt = Date.now() + timerSecs * 1000;
-    drawTimer();
-  };
-}
-$("timerMins").onchange = () => {
-  const mins = Math.max(1, Math.min(180, Math.round(Number($("timerMins").value) || 1)));
-  $("timerMins").value = String(mins);
-  timerInit = mins * 60;
-  timerSecs = timerInit;
-  timerRunning = false;
-  timerEndAt = null;
-  drawTimer();
-};
-$("timerToggle").onclick = () => {
-  if (timerSecs === 0) timerSecs = timerInit;
-  timerRunning = !timerRunning;
-  timerEndAt = timerRunning ? Date.now() + timerSecs * 1000 : null;
-  drawTimer();
-};
-$("timerReset").onclick = () => {
-  timerRunning = false;
-  timerEndAt = null;
-  timerSecs = timerInit;
-  drawTimer();
-};
-
 async function refreshState() {
   try {
     const [power, status] = await Promise.all([invoke("power_status"), invoke("status")]);
     isAwake = Boolean(power.keep_awake);
     isPaused = Boolean(status.paused);
-    $("btnAwake").classList.toggle("on", isAwake);
-    $("btnPause").classList.toggle("on", isPaused);
-    $("btnPause").textContent = t(isPaused ? "widget.ctrl.resume" : "widget.ctrl.pause");
     updateEdgeDot();
   } catch {}
   schedulePoll();
-}
-
-$("btnAwake").onclick = async () => {
-  await invoke("set_keep_awake", { enabled: !$("btnAwake").classList.contains("on") });
-  await refreshState();
-};
-$("btnPause").onclick = async () => {
-  await invoke("set_paused", { paused: !$("btnPause").classList.contains("on") });
-  await refreshState();
-};
-$("btnPass").onclick = async () => {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*";
-  const arr = new Uint32Array(16);
-  crypto.getRandomValues(arr);
-  const pwd = Array.from(arr, (n) => chars[n % chars.length]).join("");
-  await navigator.clipboard.writeText(pwd);
-  showCtrlStatus(t("widget.ctrl.copied"));
-};
-$("btnOpen").onclick = () => invoke("open_main_window");
-
-let ctrlStatusTimer = null;
-function showCtrlStatus(msg) {
-  $("ctrlStatus").textContent = msg;
-  clearTimeout(ctrlStatusTimer);
-  ctrlStatusTimer = setTimeout(() => { $("ctrlStatus").textContent = ""; }, 2200);
-}
-
-async function runCtrlAction(cmd, okKey, args) {
-  try {
-    await invoke(cmd, args);
-    if (okKey) showCtrlStatus(t(okKey));
-  } catch (err) {
-    showCtrlStatus(String(err));
-  }
-}
-$("btnLayout").onclick = () => runCtrlAction("clipboard_fix_layout", "widget.ctrl.layout_done");
-$("btnExplorer").onclick = () => runCtrlAction("restart_explorer", "widget.ctrl.explorer_done");
-$("btnDns").onclick = () => runCtrlAction("flush_dns", "widget.ctrl.dns_done");
-for (const btn of document.querySelectorAll("[data-qpath]")) {
-  btn.onclick = () => runCtrlAction("open_quick_path", null, { kind: btn.dataset.qpath });
 }
 
 function fmtBytes(n) {
@@ -247,7 +81,6 @@ function fmtBytes(n) {
 listen("tauri://drag-enter", () => {
   dragActive = true;
   setExpanded(true);
-  switchTab("files");
   $("dropZone").classList.add("over");
 });
 listen("tauri://drag-leave", () => {
@@ -571,7 +404,6 @@ $("dropReveal").onclick = () => {
 (async () => {
   try { await window.I18N?.init(); } catch {}
   syncDropControls();
-  drawTimer();
   refreshState();
   try {
     const open = await invoke("pet_open");

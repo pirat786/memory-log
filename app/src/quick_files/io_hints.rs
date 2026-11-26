@@ -161,7 +161,6 @@ pub fn is_rotational_drive(path: &Path) -> bool {
 }
 
 /// Returns `true` if both paths live on the same Windows drive letter (or on non-Windows).
-#[allow(dead_code)]
 pub fn same_drive(a: &Path, b: &Path) -> bool {
     #[cfg(windows)]
     {

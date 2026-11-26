@@ -654,8 +654,14 @@ mod state_widget {
         assert!(!state2.pet_enabled());
         state2.set_pet_enabled(true);
         assert!(state2.pet_enabled());
+        assert!(state2.layout_fix_enabled());
+        state2.set_layout_fix_enabled(false);
+        assert!(!state2.layout_fix_enabled());
         let state3 = AppState::open(&db_path, None).unwrap();
         assert!(state3.pet_enabled());
+        assert!(!state3.layout_fix_enabled());
+        state3.set_layout_fix_enabled(true);
+        assert!(AppState::open(&db_path, None).unwrap().layout_fix_enabled());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -676,7 +682,7 @@ mod state_widget {
 
 mod sys_tools_extra {
     use std::fs;
-    use crate::sys_tools::{fix_keyboard_layout, kill_pid, open_quick_path, who_locks_paths};
+    use crate::sys_tools::{fix_keyboard_layout, kill_pid, who_locks_paths};
 
     #[test]
     fn layout_preserves_numbers_and_empty_text() {
@@ -685,10 +691,9 @@ mod sys_tools_extra {
     }
 
     #[test]
-    fn kill_pid_and_open_quick_path_validate_inputs() {
+    fn kill_pid_validates_inputs() {
         assert!(kill_pid(0).is_err());
         assert!(kill_pid(std::process::id()).is_err());
-        assert!(open_quick_path("invalid_key").is_err());
     }
 
     #[test]
@@ -708,13 +713,15 @@ mod sys_tools_extra {
 }
 
 mod sys_tools {
-    use crate::sys_tools::fix_keyboard_layout;
+    use crate::sys_tools::{fix_keyboard_layout, fix_keyboard_layout_with_target};
 
     #[test]
     fn fixes_en_and_ru_keyboard_layout() {
         assert_eq!(fix_keyboard_layout("ghbdtn"), "привет");
         assert_eq!(fix_keyboard_layout("руддщ"), "hello");
         assert_eq!(fix_keyboard_layout("Ghbdtn^ rfr ltkf&"), "Привет: как дела?");
+        assert_eq!(fix_keyboard_layout_with_target("ghbdtn"), ("привет".into(), true));
+        assert_eq!(fix_keyboard_layout_with_target("руддщ"), ("hello".into(), false));
     }
 }
 

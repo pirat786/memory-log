@@ -746,6 +746,9 @@ async function start() {
     $("widgetToggle").checked = open;
     localStorage.removeItem("widgetEnabled");
   };
+  $("layoutFixToggle").onchange = async (e) => {
+    await invoke("set_layout_fix", { enabled: e.target.checked });
+  };
   window.__TAURI__?.event?.listen("widget-state", (e) => {
     $("widgetToggle").checked = Boolean(e.payload);
   });
@@ -758,6 +761,7 @@ async function start() {
   void initAppUpdates();
   setTab("windows");
   await guarded(async () => { $("autostart").checked = await invoke("get_autostart"); });
+  await guarded(async () => { $("layoutFixToggle").checked = await invoke("get_layout_fix"); });
   await guarded(async () => {
     $("idleMinutes").value = await invoke("get_idle_minutes");
     $("idleMinutes").disabled = false;

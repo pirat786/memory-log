@@ -537,53 +537,6 @@ mod win {
         }
     }
 
-    pub fn restart_explorer() -> Result<(), String> {
-        let _ = Command::new("taskkill.exe")
-            .args(["/F", "/IM", "explorer.exe"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-        Command::new("explorer.exe")
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn flush_dns() -> Result<(), String> {
-        let out = Command::new("ipconfig.exe")
-            .arg("/flushdns")
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| e.to_string())?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err("ipconfig /flushdns failed".into())
-        }
-    }
-
-    pub fn open_quick_path(kind: &str) -> Result<(), String> {
-        match kind {
-            "temp" => {
-                let p = std::env::temp_dir();
-                Command::new("explorer.exe").arg(p).spawn().map_err(|e| e.to_string())?;
-                Ok(())
-            }
-            "appdata" => {
-                let p = std::env::var_os("APPDATA")
-                    .or_else(|| std::env::var_os("LOCALAPPDATA"))
-                    .ok_or_else(|| "APPDATA not found".to_string())?;
-                Command::new("explorer.exe").arg(p).spawn().map_err(|e| e.to_string())?;
-                Ok(())
-            }
-            "hosts" => {
-                let win_dir = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-                let hosts = std::path::PathBuf::from(win_dir).join("System32\\drivers\\etc\\hosts");
-                reveal_in_explorer(&hosts.to_string_lossy())
-            }
-            _ => Err(format!("unknown quick path: {kind}")),
-        }
-    }
-
     fn send_keys(events: &[(u16, bool)]) {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -667,7 +620,7 @@ mod win {
         }
 
         let Some(text) = ml_collector::get_clipboard_text() else { return };
-        let fixed = super::fix_keyboard_layout(&text);
+        let (fixed, to_ru) = super::fix_keyboard_layout_with_target(&text);
         if fixed == text {
             return;
         }
@@ -680,6 +633,38 @@ mod win {
                 (VK_V.0, true),
                 (VK_CONTROL.0, true),
             ]);
+            switch_input_language(to_ru);
+        }
+    }
+
+    fn switch_input_language(to_ru: bool) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, PostMessageW, WM_INPUTLANGCHANGEREQUEST,
+        };
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetKeyboardLayoutList(n_buff: i32, lp_list: *mut isize) -> i32;
+        }
+
+        let target_lang: usize = if to_ru { 0x19 } else { 0x09 };
+        let mut hkls = [0isize; 32];
+        let count = unsafe { GetKeyboardLayoutList(hkls.len() as i32, hkls.as_mut_ptr()) };
+        if count <= 0 {
+            return;
+        }
+        let Some(&hkl) = hkls[..count as usize]
+            .iter()
+            .find(|&&h| ((h as usize) & 0x3FF) == target_lang)
+        else {
+            return;
+        };
+        let hwnd = unsafe { GetForegroundWindow() };
+        if !hwnd.0.is_null() {
+            unsafe {
+                let _ = PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(hkl));
+            }
         }
     }
 }
@@ -694,7 +679,7 @@ pub struct LockingProcess {
 const EN_LAYOUT: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#$^&";
 const RU_LAYOUT: &str = "йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ\"№;:?";
 
-pub fn fix_keyboard_layout(text: &str) -> String {
+pub fn fix_keyboard_layout_with_target(text: &str) -> (String, bool) {
     let mut en_count = 0usize;
     let mut ru_count = 0usize;
     for ch in text.chars() {
@@ -710,14 +695,21 @@ pub fn fix_keyboard_layout(text: &str) -> String {
     } else {
         (RU_LAYOUT.chars().collect(), EN_LAYOUT.chars().collect())
     };
-    text.chars()
+    let converted = text
+        .chars()
         .map(|ch| {
             from.iter()
                 .position(|&c| c == ch)
                 .and_then(|idx| to.get(idx).copied())
                 .unwrap_or(ch)
         })
-        .collect()
+        .collect();
+    (converted, to_ru)
+}
+
+#[cfg(test)]
+pub fn fix_keyboard_layout(text: &str) -> String {
+    fix_keyboard_layout_with_target(text).0
 }
 
 #[cfg(not(windows))]
@@ -730,14 +722,10 @@ mod win {
     pub fn execute_power_action(_: &str) {}
     pub fn who_locks_paths(_: &[String]) -> Result<Vec<LockingProcess>, String> { Err("Windows only".into()) }
     pub fn kill_pid(_: u32) -> Result<(), String> { Err("Windows only".into()) }
-    pub fn restart_explorer() -> Result<(), String> { Err("Windows only".into()) }
-    pub fn flush_dns() -> Result<(), String> { Err("Windows only".into()) }
-    pub fn open_quick_path(_: &str) -> Result<(), String> { Err("Windows only".into()) }
     pub fn fix_selection_or_word_layout(_: &std::sync::atomic::AtomicU32) {}
 }
 
 pub use win::{
-    execute_power_action, fix_selection_or_word_layout, flush_dns, kill_pid, listening_ports,
-    open_quick_path, restart_explorer, reveal_in_explorer, set_startup_item, startup_items,
-    who_locks_paths,
+    execute_power_action, fix_selection_or_word_layout, kill_pid, listening_ports,
+    reveal_in_explorer, set_startup_item, startup_items, who_locks_paths,
 };

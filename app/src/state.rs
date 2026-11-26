@@ -92,9 +92,14 @@ fn language_file(db_path: &Path) -> PathBuf {
 }
 
 fn read_flag(db_path: &Path, name: &str) -> bool {
-    fs::read_to_string(db_path.with_file_name(name))
-        .ok()
-        .is_some_and(|s| s.trim() == "1")
+    read_flag_default(db_path, name, false)
+}
+
+fn read_flag_default(db_path: &Path, name: &str, default: bool) -> bool {
+    match fs::read_to_string(db_path.with_file_name(name)) {
+        Ok(s) => s.trim() == "1",
+        Err(_) => default,
+    }
 }
 
 fn write_flag(db_path: &Path, name: &str, enabled: bool) {
@@ -140,6 +145,14 @@ impl AppState {
 
     pub fn set_pet_enabled(&self, enabled: bool) {
         write_flag(&self.db_path, "pet.txt", enabled);
+    }
+
+    pub fn layout_fix_enabled(&self) -> bool {
+        read_flag_default(&self.db_path, "layout_fix.txt", true)
+    }
+
+    pub fn set_layout_fix_enabled(&self, enabled: bool) {
+        write_flag(&self.db_path, "layout_fix.txt", enabled);
     }
 
     /// Подписи пунктов трея на текущем языке.

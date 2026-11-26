@@ -381,11 +381,14 @@ pub fn pet_move(app: AppHandle, x: i32, y: i32) {
 }
 
 #[tauri::command]
-pub async fn open_main_window(app: AppHandle) {
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        crate::window::show_main(&handle);
-    });
+pub fn get_layout_fix(state: Shared) -> bool {
+    state.layout_fix_enabled()
+}
+
+#[tauri::command]
+pub fn set_layout_fix(state: Shared, enabled: bool) -> bool {
+    state.set_layout_fix_enabled(enabled);
+    enabled
 }
 
 #[tauri::command]
@@ -428,22 +431,6 @@ pub async fn fast_delete(
         .map_err(|e| e.to_string())?
 }
 
-fn transform_clipboard(state: &Shared, f: impl FnOnce(&str) -> String) -> Result<usize, String> {
-    let text = ml_collector::get_clipboard_text()
-        .ok_or_else(|| "буфер пуст или не содержит текст".to_string())?;
-    let next = f(&text);
-    let len = next.chars().count();
-    let seq = ml_collector::set_clipboard_text(&next)
-        .ok_or_else(|| "не удалось записать в буфер".to_string())?;
-    state.clip_ignore.store(seq, std::sync::atomic::Ordering::Relaxed);
-    Ok(len)
-}
-
-#[tauri::command]
-pub fn clipboard_fix_layout(state: Shared) -> Result<usize, String> {
-    transform_clipboard(&state, sys_tools::fix_keyboard_layout)
-}
-
 #[tauri::command]
 pub async fn who_locks_file(paths: Vec<String>) -> Result<Vec<sys_tools::LockingProcess>, String> {
     tauri::async_runtime::spawn_blocking(move || sys_tools::who_locks_paths(&paths))
@@ -454,23 +441,4 @@ pub async fn who_locks_file(paths: Vec<String>) -> Result<Vec<sys_tools::Locking
 #[tauri::command]
 pub fn kill_pid(pid: u32) -> Result<(), String> {
     sys_tools::kill_pid(pid)
-}
-
-#[tauri::command]
-pub async fn restart_explorer() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(sys_tools::restart_explorer)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn flush_dns() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(sys_tools::flush_dns)
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn open_quick_path(kind: String) -> Result<(), String> {
-    sys_tools::open_quick_path(&kind)
 }

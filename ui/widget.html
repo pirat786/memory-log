@@ -50,14 +50,6 @@
     }
     .edge-dot.awake { background: #fbbf24; }
     .edge-dot.paused { background: #f87171; }
-    .edge-dot.timer {
-      background: #818cf8;
-      animation: pulse-dot 1.4s ease-in-out infinite;
-    }
-    @keyframes pulse-dot {
-      0%, 100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.45); opacity: .65; }
-    }
     .panel {
       width: calc(100% - 8px);
       height: calc(100% - 8px);
@@ -69,7 +61,7 @@
       box-shadow: 0 8px 24px rgba(0, 0, 0, .38);
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto 1fr;
       gap: 10px;
       overflow: hidden;
     }
@@ -89,95 +81,7 @@
       place-items: center;
       padding: 0;
     }
-    .seg {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 4px;
-      padding: 3px;
-      border-radius: 10px;
-      background: var(--surface);
-    }
-    .seg button {
-      padding: 5px 4px;
-      border: 0;
-      border-radius: 8px;
-      background: transparent;
-      color: var(--muted);
-      font: 600 11.5px/1.2 inherit;
-      cursor: pointer;
-    }
-    .seg button.active {
-      background: var(--bg);
-      color: var(--text);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
-    }
     .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; min-height: 0; min-width: 0; }
-    .timer-display {
-      text-align: center;
-      font: 700 32px/1.1 "Segoe UI Variable Display", system-ui, sans-serif;
-      font-variant-numeric: tabular-nums;
-      padding: 10px 0 4px;
-    }
-    .grid2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
-    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-    .act {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      padding: 8px 8px;
-      border-radius: 10px;
-      border: 1px solid var(--line);
-      background: var(--surface);
-      color: var(--text);
-      font: 600 11.5px/1.2 inherit;
-      cursor: pointer;
-      text-align: center;
-      white-space: nowrap;
-      transition: background .15s, border-color .15s, transform .08s;
-    }
-    .act:hover { border-color: var(--accent); }
-    .act:active { transform: scale(.98); }
-    .act.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .act-primary {
-      background: color-mix(in srgb, var(--accent) 12%, var(--surface));
-      border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
-      color: var(--accent);
-    }
-    .act-primary:hover {
-      background: color-mix(in srgb, var(--accent) 18%, var(--surface));
-      border-color: var(--accent);
-    }
-    .ctrl-group {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 4px;
-      padding: 4px;
-      border-radius: 10px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-    }
-    .act-ghost {
-      padding: 6px 4px;
-      border: 0;
-      border-radius: 7px;
-      background: transparent;
-      color: var(--text);
-      font: 600 11px/1.2 inherit;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background .12s, color .12s;
-    }
-    .act-ghost:hover { background: var(--bg); color: var(--accent); }
-    .kbd {
-      font: 600 9.5px/1 inherit;
-      padding: 2px 4px;
-      border-radius: 4px;
-      background: var(--bg);
-      border: 1px solid var(--line);
-      color: var(--muted);
-    }
-    .span2 { grid-column: 1 / -1; }
     .timer-row { display: flex; align-items: center; gap: 6px; }
     .timer-row input, .timer-row select {
       padding: 6px 8px;
@@ -249,17 +153,6 @@
       background: var(--accent);
       transition: width .12s linear;
     }
-    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-    .act-sm { padding: 6px 4px; font-size: 11px; }
-    .ctrl-status {
-      min-height: 14px;
-      font-size: 11px;
-      color: var(--muted);
-      text-align: center;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
     .lock-list {
       display: flex;
       flex-direction: column;
@@ -320,35 +213,7 @@
       </div>
     </div>
 
-    <div class="seg">
-      <button type="button" data-wt="timer" class="active" data-i18n="widget.tab.timer">Таймер</button>
-      <button type="button" data-wt="files" data-i18n="widget.tab.files">Файлы</button>
-      <button type="button" data-wt="ctrl" data-i18n="widget.tab.ctrl">Пульт</button>
-    </div>
-
-    <div id="pane-timer" class="tab-pane">
-      <div id="timerClock" class="timer-display">25:00</div>
-      <div class="grid3">
-        <button class="act" type="button" data-mins="5" data-i18n="widget.timer.min5">5 мин</button>
-        <button class="act" type="button" data-mins="15" data-i18n="widget.timer.min15">15 мин</button>
-        <button class="act" type="button" data-mins="25" data-i18n="widget.timer.min25">25 мин</button>
-      </div>
-      <div class="timer-row">
-        <input id="timerMins" type="number" min="1" max="180" value="25" data-i18n-title="widget.timer.custom_title" title="Своё время (мин)">
-        <select id="timerSound" data-i18n-title="widget.timer.sound_title" title="Звук таймера">
-          <option value="bell" data-i18n="widget.timer.sound.bell">Колокольчик</option>
-          <option value="beep" data-i18n="widget.timer.sound.beep">Двойной сигнал</option>
-          <option value="soft" data-i18n="widget.timer.sound.soft">Мягкий тон</option>
-          <option value="none" data-i18n="widget.timer.sound.none">Без звука</option>
-        </select>
-      </div>
-      <div class="grid2">
-        <button id="timerToggle" class="act" type="button" data-i18n="widget.timer.start">Старт</button>
-        <button id="timerReset" class="act" type="button" data-i18n="widget.timer.reset">Сброс</button>
-      </div>
-    </div>
-
-    <div id="pane-files" class="tab-pane" hidden>
+    <div id="pane-files" class="tab-pane">
       <div class="timer-row">
         <select id="dropMode">
           <option value="auto" data-i18n="widget.files.mode_auto">Авто (Фото / ZIP)</option>
@@ -379,28 +244,6 @@
         <button id="dropReveal" type="button" data-i18n="widget.files.reveal" hidden>Папка</button>
       </div>
       <div id="lockList" class="lock-list" hidden></div>
-    </div>
-
-    <div id="pane-ctrl" class="tab-pane" hidden>
-      <div class="grid2">
-        <button id="btnAwake" class="act" type="button" data-i18n="widget.ctrl.awake">Не спать</button>
-        <button id="btnPause" class="act" type="button" data-i18n="widget.ctrl.pause">Пауза записи</button>
-      </div>
-      <div class="grid2">
-        <button id="btnLayout" class="act" type="button"><span data-i18n="widget.ctrl.fix_layout">Раскладка</span><span class="kbd">Ctrl+Alt+R</span></button>
-        <button id="btnPass" class="act" type="button" data-i18n="widget.ctrl.pass">Пароль в буфер</button>
-      </div>
-      <div class="grid2">
-        <button id="btnExplorer" class="act" type="button" data-i18n="widget.ctrl.restart_explorer">Рестарт Explorer</button>
-        <button id="btnDns" class="act" type="button" data-i18n="widget.ctrl.flush_dns">Сброс DNS</button>
-      </div>
-      <div class="ctrl-group">
-        <button class="act-ghost" type="button" data-qpath="temp">Temp</button>
-        <button class="act-ghost" type="button" data-qpath="appdata">AppData</button>
-        <button class="act-ghost" type="button" data-qpath="hosts">hosts</button>
-      </div>
-      <button id="btnOpen" class="act act-primary span2" type="button" data-i18n="widget.ctrl.open">Открыть Memory Log</button>
-      <div id="ctrlStatus" class="ctrl-status"></div>
     </div>
   </div>
 

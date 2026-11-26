@@ -105,6 +105,9 @@ fn main() {
                     }
                     let Some(state) = app.try_state::<Arc<AppState>>() else { return };
                     if shortcut.key == Code::KeyR {
+                        if !state.layout_fix_enabled() {
+                            return;
+                        }
                         let st = state.inner().clone();
                         std::thread::spawn(move || sys_tools::fix_selection_or_word_layout(&st.clip_ignore));
                         return;
@@ -214,16 +217,13 @@ fn main() {
             commands::pet_open,
             commands::pet_bounds,
             commands::pet_move,
-            commands::open_main_window,
             commands::quick_drop,
             commands::quick_drop_cancel,
             commands::fast_delete,
-            commands::clipboard_fix_layout,
             commands::who_locks_file,
             commands::kill_pid,
-            commands::restart_explorer,
-            commands::flush_dns,
-            commands::open_quick_path,
+            commands::get_layout_fix,
+            commands::set_layout_fix,
         ])
         .build(tauri::generate_context!())
         .expect("не удалось собрать Memory Log")
