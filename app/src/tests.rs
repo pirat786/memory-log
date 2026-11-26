@@ -133,7 +133,10 @@ mod quick_files {
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
 
-    use crate::quick_files::{fast_delete, handle_drop, pack_zip, process_images, unpack_zip, QuickFileReport};
+    use crate::quick_files::{
+        check_free_space, fast_delete, handle_drop, io_hints, pack_solid, pack_zip,
+        process_images, unpack_solid, unpack_zip, QuickFileReport,
+    };
 
     fn print_speed(label: &str, rep: &QuickFileReport) {
         let in_mb = rep.input_bytes as f64 / 1_048_576.0;
@@ -207,23 +210,41 @@ mod quick_files {
         let dir = std::env::var("ML_PROFILE_ZIP_DIR")
             .expect("ML_PROFILE_ZIP_DIR must be set");
         let mode = std::env::var("ML_PROFILE_ZIP_MODE").unwrap_or_else(|_| "fast".into());
+        let profile_unpack = std::env::var("ML_PROFILE_UNPACK").is_ok_and(|v| v == "1");
         let log_path = std::env::temp_dir().join(format!("ml_zip_profile_{}.log", uuid::Uuid::new_v4()));
         crate::log::init(log_path.clone());
 
-        let res = pack_zip(vec![dir], &mode, None);
+        let res = if mode == "solid" {
+            pack_solid(vec![dir], None)
+        } else {
+            pack_zip(vec![dir], &mode, None)
+        };
         if let Ok(ref rep) = res {
-            let f = File::open(&rep.output_path).expect("open generated zip");
-            let archive = zip::ZipArchive::new(f).expect("read generated zip");
-            assert_eq!(archive.len(), rep.count);
-            drop(archive);
+            if mode != "solid" {
+                let f = File::open(&rep.output_path).expect("open generated zip");
+                let archive = zip::ZipArchive::new(f).expect("read generated zip");
+                assert_eq!(archive.len(), rep.count);
+                drop(archive);
+            }
+            if profile_unpack {
+                let urep = if mode == "solid" {
+                    unpack_solid(rep.output_path.clone(), None)
+                } else {
+                    unpack_zip(rep.output_path.clone(), None)
+                }
+                .expect("unpack failed");
+                print_speed(&format!("UNPACK profile ({mode})"), &urep);
+                assert_eq!(urep.count, rep.count);
+                let _ = fs::remove_dir_all(&urep.output_path);
+            }
             let _ = fs::remove_file(&rep.output_path);
         }
         if let Ok(log_contents) = fs::read_to_string(&log_path) {
             println!("=== ZIP PROFILE LOG ===\n{log_contents}=== END LOG ===");
         }
         let _ = fs::remove_file(&log_path);
-        let rep = res.expect("pack_zip failed");
-        print_speed(&format!("ZIP profile ({mode})"), &rep);
+        let rep = res.expect("pack failed");
+        print_speed(&format!("PACK profile ({mode})"), &rep);
     }
 
     #[test]
@@ -595,6 +616,324 @@ mod quick_files {
 
         assert!(fast.output_bytes >= payload.len() as u64);
         assert!(max.output_bytes < fast.output_bytes / 10);
+    }
+
+    #[test]
+    fn zstd_max_zip_roundtrip_and_incompressible_fallback() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("zstd_mix");
+        fs::create_dir_all(&src).unwrap();
+
+        let exe_data = b"MZ\x90\x00".iter().copied().chain(std::iter::repeat(b'Z').take(128 * 1024)).collect::<Vec<u8>>();
+        fs::write(src.join("compressible.exe"), &exe_data).unwrap();
+
+        // High-entropy pseudo-random bytes (>64 KiB) should fall back to Stored in max mode
+        let mut jpg_data = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        let mut x: u32 = 0x1234_5678;
+        for _ in 0..(80 * 1024) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            jpg_data.push((x & 0xFF) as u8);
+        }
+        fs::write(src.join("noisy.jpg"), &jpg_data).unwrap();
+
+        let rep = pack_zip(vec![src.to_string_lossy().into_owned()], "max", None).unwrap();
+        assert!(rep.output_bytes < (exe_data.len() + jpg_data.len()) as u64);
+        assert!(rep.output_bytes > jpg_data.len() as u64);
+
+        {
+            let f = File::open(&rep.output_path).unwrap();
+            let mut arch = zip::ZipArchive::new(f).unwrap();
+            assert_eq!(arch.by_name("compressible.exe").unwrap().compression(), zip::CompressionMethod::Zstd);
+            assert_eq!(arch.by_name("noisy.jpg").unwrap().compression(), zip::CompressionMethod::Stored);
+        }
+
+        let unp = unpack_zip(rep.output_path, None).unwrap();
+        let out_dir = Path::new(&unp.output_path);
+        assert_eq!(fs::read(out_dir.join("compressible.exe")).unwrap(), exe_data);
+        assert_eq!(fs::read(out_dir.join("noisy.jpg")).unwrap(), jpg_data);
+    }
+
+    #[test]
+    fn solid_tar_zst_pack_and_auto_unpack() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("solid_src");
+        let sub = src.join("nested");
+        fs::create_dir_all(&sub).unwrap();
+
+        let sample = "Memory Log solid dictionary test payload 0123456789abcdef\n".repeat(400);
+        for i in 0..20 {
+            let p = if i % 2 == 0 {
+                src.join(format!("doc_{i:02}.txt"))
+            } else {
+                sub.join(format!("log_{i:02}.log"))
+            };
+            fs::write(p, &sample).unwrap();
+        }
+
+        let fast_rep = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        let solid_rep = handle_drop(
+            vec![src.to_string_lossy().into_owned()],
+            "zip",
+            1920,
+            82,
+            "solid",
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(solid_rep.output_path.ends_with(".tar.zst"));
+        assert_eq!(solid_rep.count, 20);
+        assert!(solid_rep.output_bytes < fast_rep.output_bytes / 4);
+
+        let unpacked = handle_drop(
+            vec![solid_rep.output_path],
+            "auto",
+            1920,
+            82,
+            "fast",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(unpacked.kind, "zip-unpack");
+        assert_eq!(unpacked.count, 20);
+        assert_eq!(
+            fs::read_to_string(Path::new(&unpacked.output_path).join("doc_00.txt")).unwrap(),
+            sample
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&unpacked.output_path).join("nested").join("log_01.log")).unwrap(),
+            sample
+        );
+    }
+
+    #[test]
+    fn parallel_unpack_zip_restores_many_files() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("many_files");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        for i in 0..24 {
+            let p = if i % 2 == 0 {
+                src.join(format!("f_{i:02}.txt"))
+            } else {
+                src.join("a/b").join(format!("sub_{i:02}.bin"))
+            };
+            fs::write(p, format!("payload-{i}-{}", "x".repeat(i * 1024 + 17))).unwrap();
+        }
+
+        let packed = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        let unpacked = unpack_zip(packed.output_path, None).unwrap();
+        assert_eq!(unpacked.count, 24);
+        let out_dir = Path::new(&unpacked.output_path);
+        for i in 0..24 {
+            let p = if i % 2 == 0 {
+                out_dir.join(format!("f_{i:02}.txt"))
+            } else {
+                out_dir.join("a/b").join(format!("sub_{i:02}.bin"))
+            };
+            assert_eq!(
+                fs::read_to_string(p).unwrap(),
+                format!("payload-{i}-{}", "x".repeat(i * 1024 + 17))
+            );
+        }
+    }
+
+    #[test]
+    fn zip_and_solid_preserve_empty_dirs_and_mtime() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("with_empty");
+        let empty = src.join("sub").join("empty_leaf");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(src.join("hello.txt"), b"preserve mtime & empty dir").unwrap();
+
+        let zip_rep = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        {
+            let f = File::open(&zip_rep.output_path).unwrap();
+            let mut arch = zip::ZipArchive::new(f).unwrap();
+            let file_entry = arch.by_name("hello.txt").unwrap();
+            assert!(
+                file_entry.last_modified().is_some_and(|dt| dt.year() >= 2020),
+                "expected preserved mtime year >= 2020"
+            );
+            drop(file_entry);
+            assert!(arch.by_name("sub/empty_leaf/").is_ok());
+        }
+        let zip_unp = unpack_zip(zip_rep.output_path, None).unwrap();
+        assert!(Path::new(&zip_unp.output_path).join("sub/empty_leaf").is_dir());
+
+        let solid_rep = pack_solid(vec![src.to_string_lossy().into_owned()], None).unwrap();
+        let solid_unp = unpack_solid(solid_rep.output_path, None).unwrap();
+        assert!(Path::new(&solid_unp.output_path).join("sub/empty_leaf").is_dir());
+    }
+
+    #[test]
+    fn auto_mode_unpacks_tar_gz_and_standalone_gz() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+
+        // 1. .tar.gz with nested file and a path-traversal entry
+        let tgz_path = dir.path().join("bundle.tar.gz");
+        {
+            let f = File::create(&tgz_path).unwrap();
+            let enc = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+            let mut tb = tar::Builder::new(enc);
+            let data = b"hello from tar.gz!";
+            let mut hdr = tar::Header::new_gnu();
+            hdr.set_size(data.len() as u64);
+            hdr.set_mode(0o644);
+            hdr.set_cksum();
+            tb.append_data(&mut hdr, "nested/hello.txt", &data[..]).unwrap();
+            let enc = tb.into_inner().unwrap();
+            enc.finish().unwrap();
+        }
+        let rep_tgz = handle_drop(
+            vec![tgz_path.to_string_lossy().into_owned()],
+            "auto",
+            1920,
+            82,
+            "fast",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(rep_tgz.kind, "zip-unpack");
+        assert_eq!(rep_tgz.count, 1);
+        assert_eq!(
+            fs::read_to_string(Path::new(&rep_tgz.output_path).join("nested/hello.txt")).unwrap(),
+            "hello from tar.gz!"
+        );
+
+        // 2. Standalone .txt.gz
+        let gz_path = dir.path().join("notes.txt.gz");
+        {
+            let f = File::create(&gz_path).unwrap();
+            let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+            enc.write_all(b"standalone gz content").unwrap();
+            enc.finish().unwrap();
+        }
+        let rep_gz = handle_drop(
+            vec![gz_path.to_string_lossy().into_owned()],
+            "auto",
+            1920,
+            82,
+            "fast",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(rep_gz.kind, "zip-unpack");
+        assert_eq!(rep_gz.count, 1);
+        assert_eq!(fs::read_to_string(&rep_gz.output_path).unwrap(), "standalone gz content");
+    }
+
+    #[test]
+    fn disk_space_check_rejects_impossible_size() {
+        let tmp = std::env::temp_dir();
+        if let Some(avail) = io_hints::available_disk_space(&tmp) {
+            assert!(avail > 0);
+            let err = check_free_space(&tmp, u64::MAX / 2).unwrap_err();
+            assert!(err.contains("недостаточно места"));
+        }
+    }
+
+    #[test]
+    fn auto_mode_unpacks_batch_of_mixed_archives() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+
+        let src_a = dir.path().join("alpha");
+        let src_b = dir.path().join("beta");
+        fs::create_dir_all(&src_a).unwrap();
+        fs::create_dir_all(&src_b).unwrap();
+        fs::write(src_a.join("a.txt"), b"from zip").unwrap();
+        fs::write(src_b.join("b.txt"), b"from solid").unwrap();
+
+        let z = pack_zip(vec![src_a.to_string_lossy().into_owned()], "fast", None).unwrap();
+        let s = pack_solid(vec![src_b.to_string_lossy().into_owned()], None).unwrap();
+
+        let tgz_path = dir.path().join("gamma.tar.gz");
+        {
+            let f = File::create(&tgz_path).unwrap();
+            let enc = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+            let mut tb = tar::Builder::new(enc);
+            let data = b"from targz";
+            let mut hdr = tar::Header::new_gnu();
+            hdr.set_size(data.len() as u64);
+            hdr.set_mode(0o644);
+            hdr.set_cksum();
+            tb.append_data(&mut hdr, "c.txt", &data[..]).unwrap();
+            tb.into_inner().unwrap().finish().unwrap();
+        }
+
+        let rep = handle_drop(
+            vec![
+                z.output_path,
+                s.output_path,
+                tgz_path.to_string_lossy().into_owned(),
+            ],
+            "auto",
+            1920,
+            82,
+            "fast",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(rep.kind, "zip-unpack");
+        assert_eq!(rep.count, 3);
+        assert_eq!(rep.detail, "3 arch");
+        assert_eq!(fs::read_to_string(dir.path().join("alpha (2)/a.txt")).unwrap(), "from zip");
+        assert_eq!(fs::read_to_string(dir.path().join("beta (2)/b.txt")).unwrap(), "from solid");
+        assert_eq!(fs::read_to_string(dir.path().join("gamma/c.txt")).unwrap(), "from targz");
+    }
+
+    #[test]
+    fn batch_pack_multiple_files_and_folders_zip_and_solid() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let d1 = dir.path().join("d1");
+        let d2 = dir.path().join("d2");
+        let folder = dir.path().join("sub_folder");
+        fs::create_dir_all(&d1).unwrap();
+        fs::create_dir_all(&d2).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+
+        let f1 = d1.join("same.txt");
+        let f2 = d2.join("same.txt");
+        let f3 = folder.join("inside.txt");
+        fs::write(&f1, b"first").unwrap();
+        fs::write(&f2, b"second").unwrap();
+        fs::write(&f3, b"folder").unwrap();
+
+        let inputs = vec![
+            f1.to_string_lossy().into_owned(),
+            f2.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
+        ];
+
+        let z = pack_zip(inputs.clone(), "fast", None).unwrap();
+        assert_eq!(z.count, 3);
+        let zu = unpack_zip(z.output_path, None).unwrap();
+        assert_eq!(zu.count, 3);
+        let zu_dir = Path::new(&zu.output_path);
+        assert_eq!(fs::read_to_string(zu_dir.join("same.txt")).unwrap(), "first");
+        assert_eq!(fs::read_to_string(zu_dir.join("same (2).txt")).unwrap(), "second");
+        assert_eq!(fs::read_to_string(zu_dir.join("sub_folder/inside.txt")).unwrap(), "folder");
+
+        let s = pack_solid(inputs, None).unwrap();
+        assert_eq!(s.count, 3);
+        let su = unpack_solid(s.output_path, None).unwrap();
+        assert_eq!(su.count, 3);
+        let su_dir = Path::new(&su.output_path);
+        assert_eq!(fs::read_to_string(su_dir.join("same.txt")).unwrap(), "first");
+        assert_eq!(fs::read_to_string(su_dir.join("same (2).txt")).unwrap(), "second");
+        assert_eq!(fs::read_to_string(su_dir.join("sub_folder/inside.txt")).unwrap(), "folder");
     }
 
     #[test]

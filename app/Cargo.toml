@@ -26,7 +26,9 @@ flate2 = "1"
 sha2 = "0.10"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-zip = { version = "4.6", default-features = false, features = ["deflate"] }
+zip = { version = "4.6", default-features = false, features = ["deflate", "zstd"] }
+zstd = { version = "0.13", features = ["zstdmt"] }
+tar = "0.4"
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif", "tiff"] }
 

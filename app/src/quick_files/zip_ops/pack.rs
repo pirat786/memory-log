@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -6,13 +7,15 @@ use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 use walkdir::WalkDir;
+use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::bg_writer::BgFileWriter;
 use super::parallel::{build_chunks, run_parallel_hdd, run_parallel_ssd};
 use super::{
-    detect_hdd_mode, should_compress, zip_options, ZipEntryTask, ZipPackStats, HUGE_BUF_HDD,
-    HUGE_BUF_SSD, PARALLEL_FILE_MAX_BYTES,
+    check_free_space, detect_hdd_mode, should_compress_est, should_compress_task,
+    system_time_to_zip_dt, unique_entry_name, zip_options_for, ZipEntryTask, ZipPackStats,
+    HUGE_BUF_HDD, HUGE_BUF_SSD, PARALLEL_FILE_MAX_BYTES,
 };
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read, same_drive};
 use crate::quick_files::{ext_lower, is_cancelled, unique_path, ProgressReporter, QuickFileReport};
@@ -82,6 +85,9 @@ pub fn pack_zip(
     let mut incompressible_bytes = 0u64;
     let mut parallel_entries: Vec<ZipEntryTask> = Vec::new();
     let mut huge_entries: Vec<ZipEntryTask> = Vec::new();
+    let mut seen_dirs: Vec<(PathBuf, String)> = Vec::new();
+    let mut has_children: HashSet<PathBuf> = HashSet::new();
+    let mut used_names: HashSet<String> = HashSet::new();
 
     for root in &valid {
         if is_cancelled() {
@@ -96,14 +102,19 @@ pub fn pack_zip(
             {
                 continue;
             }
-            let len = fs::metadata(root).map(|m| m.len()).unwrap_or(0);
-            let name = root
+            let meta = fs::metadata(root).ok();
+            let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime = meta
+                .and_then(|m| m.modified().ok())
+                .and_then(system_time_to_zip_dt);
+            let raw_name = root
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("file")
                 .to_string();
+            let name = unique_entry_name(&mut used_names, raw_name);
             total_expected = total_expected.saturating_add(len);
-            if should_compress(&ext_lower(root), zip_mode) {
+            if should_compress_est(&ext_lower(root), zip_mode) {
                 compressible_bytes = compressible_bytes.saturating_add(len);
             } else {
                 incompressible_bytes = incompressible_bytes.saturating_add(len);
@@ -112,6 +123,7 @@ pub fn pack_zip(
                 path: root.clone(),
                 zip_name: name,
                 len,
+                mtime,
             };
             if len <= PARALLEL_FILE_MAX_BYTES {
                 parallel_entries.push(task);
@@ -129,7 +141,20 @@ pub fn pack_zip(
                 }
                 let entry = entry.map_err(|e| format!("ошибка обхода папки: {e}"))?;
                 let p = entry.path();
+                if let Some(parent) = p.parent() {
+                    has_children.insert(parent.to_path_buf());
+                }
                 if p.is_dir() {
+                    let rel = p.strip_prefix(root).unwrap_or(p);
+                    if !rel.as_os_str().is_empty() {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        let dir_name = if valid.len() == 1 {
+                            rel_str
+                        } else {
+                            format!("{root_name}/{rel_str}")
+                        };
+                        seen_dirs.push((p.to_path_buf(), dir_name));
+                    }
                     continue;
                 }
                 if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
@@ -138,16 +163,21 @@ pub fn pack_zip(
                 {
                     continue;
                 }
-                let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let meta = entry.metadata().ok();
+                let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let mtime = meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(system_time_to_zip_dt);
                 let rel = p.strip_prefix(root).unwrap_or(p);
                 let rel_str = rel.to_string_lossy().replace('\\', "/");
-                let zip_name = if valid.len() == 1 {
+                let raw_zip_name = if valid.len() == 1 {
                     rel_str
                 } else {
                     format!("{root_name}/{rel_str}")
                 };
+                let zip_name = unique_entry_name(&mut used_names, raw_zip_name);
                 total_expected = total_expected.saturating_add(len);
-                if should_compress(&ext_lower(p), zip_mode) {
+                if should_compress_est(&ext_lower(p), zip_mode) {
                     compressible_bytes = compressible_bytes.saturating_add(len);
                 } else {
                     incompressible_bytes = incompressible_bytes.saturating_add(len);
@@ -156,6 +186,7 @@ pub fn pack_zip(
                     path: p.to_path_buf(),
                     zip_name,
                     len,
+                    mtime,
                 };
                 if len <= PARALLEL_FILE_MAX_BYTES {
                     parallel_entries.push(task);
@@ -165,17 +196,24 @@ pub fn pack_zip(
             }
         }
     }
+    let empty_dirs: Vec<String> = seen_dirs
+        .into_iter()
+        .filter(|(p, _)| !has_children.contains(p))
+        .map(|(_, name)| name)
+        .collect();
     stats.scan_total = scan_started.elapsed();
 
     let total_files = parallel_entries.len() + huge_entries.len();
+    let est_size = incompressible_bytes
+        .saturating_add(compressible_bytes / 2)
+        .saturating_add((total_files as u64).saturating_mul(128))
+        .saturating_add(65_536);
+    check_free_space(out_dir, est_size)?;
+
     let out_file = create_sequential_write(&out_path)
         .map_err(|e| format!("не удалось создать архив {}: {e}", out_path.display()))?;
     let preallocated = if total_expected >= 1024 * 1024 {
-        let est = incompressible_bytes
-            .saturating_add(compressible_bytes / 2)
-            .saturating_add((total_files as u64).saturating_mul(128))
-            .saturating_add(65_536);
-        out_file.set_len(est).is_ok()
+        out_file.set_len(est_size).is_ok()
     } else {
         false
     };
@@ -337,6 +375,13 @@ pub fn pack_zip(
                 );
             }
         }
+        for dir_name in &empty_dirs {
+            if is_cancelled() {
+                return Err("отменено".into());
+            }
+            zip.add_directory(dir_name, SimpleFileOptions::default())
+                .map_err(|e| format!("ошибка добавления папки {dir_name}: {e}"))?;
+        }
         Ok(())
     })();
 
@@ -428,7 +473,8 @@ fn write_huge_entry<W: Write + io::Seek>(
     progress: &mut ProgressReporter<'_>,
     stats: &mut ZipPackStats,
 ) -> Result<u64, String> {
-    let opts = zip_options(&ext_lower(&task.path), task.len, zip_mode);
+    let compress = should_compress_task(&task.path, task.len, zip_mode);
+    let opts = zip_options_for(compress, task.len, zip_mode, task.mtime);
 
     let t_start = Instant::now();
     zip.start_file(&task.zip_name, opts)

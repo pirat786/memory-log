@@ -88,6 +88,35 @@ mod win_disk {
             lp_overlapped: *mut core::ffi::c_void,
         ) -> i32;
         fn CloseHandle(h_object: Handle) -> i32;
+        fn GetDiskFreeSpaceExW(
+            lp_directory_name: *const u16,
+            lp_free_bytes_available_to_caller: *mut u64,
+            lp_total_number_of_bytes: *mut u64,
+            lp_total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+
+    pub fn free_space_bytes(path: &Path) -> Option<u64> {
+        let dir = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        let mut dir_str = dir.to_string_lossy().into_owned();
+        if dir_str.is_empty() {
+            dir_str.push('.');
+        }
+        let wide: Vec<u16> = std::ffi::OsStr::new(&dir_str)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut avail = 0u64;
+        let mut total = 0u64;
+        let mut total_free = 0u64;
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut total_free)
+        };
+        (ok != 0).then_some(avail)
     }
 
     pub fn is_rotational(path: &Path) -> bool {
@@ -173,5 +202,18 @@ pub fn same_drive(a: &Path, b: &Path) -> bool {
     {
         let _ = (a, b);
         true
+    }
+}
+
+/// Returns available free bytes on the filesystem containing `path`.
+pub fn available_disk_space(path: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        win_disk::free_space_bytes(path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
     }
 }

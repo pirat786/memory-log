@@ -6,8 +6,9 @@ use zip::{ZipArchive, ZipWriter};
 
 use super::bg_writer::BoundedQueue;
 use super::{
-    zip_options, MiniResult, ZipEntryTask, ZipPackStats, HDD_READAHEAD_CHUNKS,
-    PARALLEL_CHUNK_MAX_BYTES, PARALLEL_CHUNK_MAX_FILES, RECYCLE_MAX_CAP,
+    should_compress_mem, should_compress_task, zip_options_for, MiniResult, ZipEntryTask,
+    ZipPackStats, HDD_READAHEAD_CHUNKS, PARALLEL_CHUNK_MAX_BYTES, PARALLEL_CHUNK_MAX_FILES,
+    RECYCLE_MAX_CAP,
 };
 use crate::quick_files::io_hints::open_sequential_read;
 use crate::quick_files::{ext_lower, is_cancelled, ProgressReporter};
@@ -31,6 +32,11 @@ pub(super) fn build_chunks(entries: Vec<ZipEntryTask>) -> Vec<Vec<ZipEntryTask>>
         chunks.push(cur_chunk);
     }
     chunks
+}
+
+fn estimate_chunk_capacity(chunk: &[ZipEntryTask]) -> usize {
+    let raw: u64 = chunk.iter().map(|t| t.len).sum();
+    (raw.min(16 * 1024 * 1024) as usize) + chunk.len() * 128 + 4096
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -60,7 +66,8 @@ pub(super) fn run_parallel_ssd<W: Write + io::Seek>(
                     }
                     let next = q.lock().ok().and_then(|mut g| g.next());
                     let Some(chunk) = next else { break };
-                    let mut mini = ZipWriter::new(Cursor::new(Vec::new()));
+                    let cap = estimate_chunk_capacity(&chunk);
+                    let mut mini = ZipWriter::new(Cursor::new(Vec::with_capacity(cap)));
                     let mut chunk_in = 0u64;
                     let mut chunk_cnt = 0usize;
                     let mut open_dur = Duration::ZERO;
@@ -72,7 +79,8 @@ pub(super) fn run_parallel_ssd<W: Write + io::Seek>(
                             err_msg = Some("отменено".into());
                             break;
                         }
-                        let opts = zip_options(&ext_lower(&task.path), task.len, zip_mode);
+                        let compress = should_compress_task(&task.path, task.len, zip_mode);
+                        let opts = zip_options_for(compress, task.len, zip_mode, task.mtime);
                         if let Err(e) = mini.start_file(&task.zip_name, opts) {
                             err_msg = Some(format!("ошибка добавления {}: {e}", task.zip_name));
                             break;
@@ -254,7 +262,9 @@ pub(super) fn run_parallel_hdd<W: Write + io::Seek>(
                     }
                 };
 
-                let mut mini = ZipWriter::new(Cursor::new(Vec::new()));
+                let raw: u64 = loaded.iter().map(|(t, _)| t.len).sum();
+                let est = (raw.min(16 * 1024 * 1024) as usize) + loaded.len() * 128 + 4096;
+                let mut mini = ZipWriter::new(Cursor::new(Vec::with_capacity(est)));
                 let mut chunk_in = 0u64;
                 let mut chunk_cnt = 0usize;
                 let mut err_msg: Option<String> = None;
@@ -264,7 +274,8 @@ pub(super) fn run_parallel_hdd<W: Write + io::Seek>(
                         err_msg = Some("отменено".into());
                         break;
                     }
-                    let opts = zip_options(&ext_lower(&task.path), task.len, zip_mode);
+                    let compress = should_compress_mem(&ext_lower(&task.path), &data, zip_mode);
+                    let opts = zip_options_for(compress, task.len, zip_mode, task.mtime);
                     if let Err(e) = mini.start_file(&task.zip_name, opts) {
                         err_msg = Some(format!("ошибка добавления {}: {e}", task.zip_name));
                         break;
@@ -355,16 +366,25 @@ fn drain_mini_archives<W: Write + io::Seek>(
         stats.read += read_dur;
 
         let t_merge = Instant::now();
-        let archive = match ZipArchive::new(Cursor::new(bytes)) {
+        let mut archive = match ZipArchive::new(Cursor::new(bytes)) {
             Ok(a) => a,
             Err(e) => {
                 drop(rx);
                 return Err(format!("ошибка чтения блока ZIP: {e}"));
             }
         };
-        if let Err(e) = zip.merge_archive(archive) {
-            drop(rx);
-            return Err(format!("ошибка склейки ZIP: {e}"));
+        for i in 0..archive.len() {
+            let entry = match archive.by_index_raw(i) {
+                Ok(e) => e,
+                Err(e) => {
+                    drop(rx);
+                    return Err(format!("ошибка чтения элемента блока ZIP: {e}"));
+                }
+            };
+            if let Err(e) = zip.raw_copy_file(entry) {
+                drop(rx);
+                return Err(format!("ошибка склейки ZIP: {e}"));
+            }
         }
         stats.batch_merge += t_merge.elapsed();
 

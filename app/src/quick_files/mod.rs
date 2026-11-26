@@ -69,6 +69,11 @@ impl<'a> ProgressReporter<'a> {
         self.emit(false);
     }
 
+    pub(crate) fn set(&mut self, done: u64) {
+        self.done = done;
+        self.emit(false);
+    }
+
     fn emit(&mut self, force: bool) {
         let Some(app) = self.app else { return };
         let pct = if self.total == 0 {
@@ -121,7 +126,71 @@ pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 #[cfg(test)]
 pub use images::process_images;
 #[cfg(test)]
-pub use zip_ops::{pack_zip, unpack_zip};
+pub use zip_ops::{pack_solid, pack_zip, unpack_solid, unpack_zip};
+#[cfg(test)]
+pub(crate) use zip_ops::check_free_space;
+
+fn archive_kind(path: &Path) -> Option<&'static str> {
+    let lower = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if lower.ends_with(".zip") {
+        Some("zip")
+    } else if lower.ends_with(".tar.zst") || lower.ends_with(".tzst") {
+        Some("tar_zst")
+    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        Some("tar_gz")
+    } else if lower.ends_with(".gz") {
+        Some("gz")
+    } else {
+        None
+    }
+}
+
+fn unpack_one(path: String, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    match archive_kind(Path::new(&path)) {
+        Some("zip") => zip_ops::unpack_zip(path, app),
+        Some("tar_zst") => zip_ops::unpack_solid(path, app),
+        Some("tar_gz") => zip_ops::unpack_tar_gz(path, app),
+        Some("gz") => zip_ops::unpack_gz(path, app),
+        _ => Err(format!("неподдерживаемый архив: {path}")),
+    }
+}
+
+fn unpack_batch(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    let started = Instant::now();
+    let total_archives = paths.len();
+    let mut first_out = String::new();
+    let mut total_count = 0usize;
+    let mut total_in = 0u64;
+    let mut total_out = 0u64;
+
+    for p in paths {
+        if is_cancelled() {
+            return Err("отменено".into());
+        }
+        let rep = unpack_one(p, app)?;
+        if first_out.is_empty() {
+            first_out = rep.output_path;
+        }
+        total_count += rep.count;
+        total_in = total_in.saturating_add(rep.input_bytes);
+        total_out = total_out.saturating_add(rep.output_bytes);
+    }
+
+    Ok(QuickFileReport {
+        kind: "zip-unpack".into(),
+        output_path: first_out,
+        count: total_count,
+        input_bytes: total_in,
+        output_bytes: total_out,
+        elapsed_ms: started.elapsed().as_millis(),
+        detail: format!("{total_archives} arch"),
+        deleted_original: false,
+    })
+}
 
 pub fn handle_drop(
     paths: Vec<String>,
@@ -142,11 +211,16 @@ pub fn handle_drop(
     if matches!(mode, "compress" | "webp" | "jpg" | "jpeg" | "strip") {
         return images::process_images(paths, mode, max_dim, quality, app);
     }
-    if paths.len() == 1 {
-        let p = Path::new(&paths[0]);
-        if p.is_file() && ext_lower(p) == "zip" && mode == "auto" {
-            return zip_ops::unpack_zip(paths[0].clone(), app);
+    let all_archives = mode == "auto"
+        && paths.iter().all(|raw| {
+            let p = Path::new(raw);
+            p.is_file() && archive_kind(p).is_some()
+        });
+    if all_archives {
+        if paths.len() == 1 {
+            return unpack_one(paths.into_iter().next().unwrap(), app);
         }
+        return unpack_batch(paths, app);
     }
     let all_images = paths.iter().all(|raw| {
         let p = Path::new(raw);
@@ -167,7 +241,11 @@ fn pack_and_maybe_delete(
     app: Option<&AppHandle>,
 ) -> Result<QuickFileReport, String> {
     let orig_paths = if delete_after { Some(paths.clone()) } else { None };
-    let mut rep = zip_ops::pack_zip(paths, zip_mode, app)?;
+    let mut rep = if zip_mode == "solid" {
+        zip_ops::pack_solid(paths, app)?
+    } else {
+        zip_ops::pack_zip(paths, zip_mode, app)?
+    };
     if let Some(orig) = orig_paths {
         if rep.kind == "zip-pack"
             && rep.output_bytes > 0
