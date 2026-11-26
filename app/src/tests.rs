@@ -1040,6 +1040,44 @@ mod quick_files {
     }
 
     #[test]
+    fn solid_probe_and_parallel_pack_unpack_roundtrip() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("solid_par_src");
+        fs::create_dir_all(&src).unwrap();
+
+        for i in 0..24 {
+            fs::write(
+                src.join(format!("item_{i:02}.txt")),
+                format!("parallel solid item {i} — {}", "abcd".repeat(64)),
+            )
+            .unwrap();
+        }
+        let mut noisy = vec![0u8; 256 * 1024];
+        for (i, b) in noisy.iter_mut().enumerate() {
+            *b = ((i.wrapping_mul(2654435761)) >> 24) as u8;
+        }
+        fs::write(src.join("encrypted_like.bin"), &noisy).unwrap();
+        let big_text = "large solid stream line 0123456789abcdef\n".repeat(65_000);
+        fs::write(src.join("big_stream.txt"), &big_text).unwrap();
+
+        let rep = pack_solid(vec![src.to_string_lossy().into_owned()], None).unwrap();
+        assert_eq!(rep.count, 26);
+
+        let unp = unpack_solid(rep.output_path, None).unwrap();
+        assert_eq!(unp.count, 26);
+        let out_dir = Path::new(&unp.output_path);
+        for i in 0..24 {
+            assert_eq!(
+                fs::read_to_string(out_dir.join(format!("item_{i:02}.txt"))).unwrap(),
+                format!("parallel solid item {i} — {}", "abcd".repeat(64))
+            );
+        }
+        assert_eq!(fs::read(out_dir.join("encrypted_like.bin")).unwrap(), noisy);
+        assert_eq!(fs::read_to_string(out_dir.join("big_stream.txt")).unwrap(), big_text);
+    }
+
+    #[test]
     fn fast_delete_rejects_empty_and_userprofile() {
         assert!(fast_delete(vec![], None).is_err());
         if let Some(profile) = std::env::var_os("USERPROFILE") {
