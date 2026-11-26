@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -42,14 +42,6 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
         UNPACK_BUF_SSD
     };
 
-    crate::log::info(&format!(
-        "zip-unpack start: archive={}, in={:.1} MB, hdd={}, out={}",
-        path.display(),
-        input_bytes as f64 / 1_048_576.0,
-        hdd_mode,
-        out_dir.display()
-    ));
-
     let file = open_sequential_read(&path)
         .map_err(|e| format!("не удалось открыть архив {}: {e}", path.display()))?;
     let reader = BufReader::with_capacity(buf_size, file);
@@ -72,7 +64,7 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
                 return Err("отменено".into());
             }
             let entry = archive
-                .by_index(i)
+                .by_index_raw(i)
                 .map_err(|e| format!("ошибка чтения элемента архива: {e}"))?;
             let Some(rel_path) = entry.enclosed_name() else {
                 continue;
@@ -110,6 +102,25 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
         return Err(e);
     }
 
+    let workers = if !hdd_mode && files.len() >= 8 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 4)
+            .min(files.len())
+    } else {
+        1
+    };
+
+    crate::log::info(&format!(
+        "zip-unpack start: archive={}, in={:.1} MB, hdd={}, workers={}, out={}",
+        path.display(),
+        input_bytes as f64 / 1_048_576.0,
+        hdd_mode,
+        workers,
+        out_dir.display()
+    ));
+
     let mut progress = ProgressReporter::new(app, total_expected);
     let mut count = 0usize;
     let mut output_bytes = 0u64;
@@ -117,13 +128,8 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
     let mut read_dur = Duration::ZERO;
     let mut write_dur = Duration::ZERO;
 
-    let res: Result<(), String> = if !hdd_mode && files.len() >= 8 {
+    let res: Result<(), String> = if !hdd_mode && files.len() >= 8 && workers > 1 {
         drop(archive);
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .clamp(2, 4)
-            .min(files.len());
         let next_idx = AtomicUsize::new(0);
         let (tx, rx) = mpsc::channel::<Result<(u64, Duration, Duration, Duration), String>>();
 
@@ -144,7 +150,7 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
                             return;
                         }
                     };
-                    let mut arch = match ZipArchive::new(BufReader::with_capacity(
+                    let arch = match ZipArchive::new(BufReader::with_capacity(
                         PARALLEL_READER_BUF,
                         f,
                     )) {
@@ -154,119 +160,7 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
                             return;
                         }
                     };
-                    let mut buf = vec![0u8; PARALLEL_UNPACK_BUF];
-                    let mut small_buf = Vec::with_capacity(SMALL_UNPACK_MAX_BYTES as usize);
-                    loop {
-                        if is_cancelled() {
-                            break;
-                        }
-                        let pos = idx_ref.fetch_add(1, Ordering::Relaxed);
-                        if pos >= files_ref.len() {
-                            break;
-                        }
-                        let (entry_idx, ref out_path, size) = files_ref[pos];
-                        let mut entry = match arch.by_index(entry_idx) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                let _ = tx.send(Err(format!(
-                                    "ошибка чтения элемента архива: {e}"
-                                )));
-                                break;
-                            }
-                        };
-                        let t_open = Instant::now();
-                        let mut out_file = match create_sequential_write(out_path) {
-                            Ok(f) => f,
-                            Err(e) => {
-                                let _ = tx.send(Err(format!(
-                                    "не удалось создать файл {}: {e}",
-                                    out_path.display()
-                                )));
-                                break;
-                            }
-                        };
-                        if size >= SET_LEN_MIN_BYTES {
-                            let _ = out_file.set_len(size);
-                        }
-                        let mut f_open = t_open.elapsed();
-                        let mut f_read = Duration::ZERO;
-                        let mut f_write = Duration::ZERO;
-
-                        if size <= SMALL_UNPACK_MAX_BYTES {
-                            small_buf.clear();
-                            let t_read = Instant::now();
-                            if let Err(e) = entry.read_to_end(&mut small_buf) {
-                                let _ = tx.send(Err(format!(
-                                    "ошибка распаковки {}: {e}",
-                                    out_path.display()
-                                )));
-                                return;
-                            }
-                            f_read += t_read.elapsed();
-                            let t_write = Instant::now();
-                            if let Err(e) = out_file.write_all(&small_buf) {
-                                let _ = tx.send(Err(format!(
-                                    "ошибка записи {}: {e}",
-                                    out_path.display()
-                                )));
-                                return;
-                            }
-                            f_write += t_write.elapsed();
-                            if tx
-                                .send(Ok((small_buf.len() as u64, f_open, f_read, f_write)))
-                                .is_err()
-                            {
-                                return;
-                            }
-                            continue;
-                        }
-
-                        loop {
-                            if is_cancelled() {
-                                return;
-                            }
-                            let t_read = Instant::now();
-                            let n = match entry.read(&mut buf) {
-                                Ok(n) => n,
-                                Err(e) => {
-                                    let _ = tx.send(Err(format!(
-                                        "ошибка распаковки {}: {e}",
-                                        out_path.display()
-                                    )));
-                                    return;
-                                }
-                            };
-                            f_read += t_read.elapsed();
-                            if n == 0 {
-                                break;
-                            }
-                            let t_write = Instant::now();
-                            if let Err(e) = out_file.write_all(&buf[..n]) {
-                                let _ = tx.send(Err(format!(
-                                    "ошибка записи {}: {e}",
-                                    out_path.display()
-                                )));
-                                return;
-                            }
-                            f_write += t_write.elapsed();
-                            if tx
-                                .send(Ok((
-                                    n as u64,
-                                    std::mem::take(&mut f_open),
-                                    std::mem::take(&mut f_read),
-                                    std::mem::take(&mut f_write),
-                                )))
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        if !f_open.is_zero() || !f_read.is_zero() || !f_write.is_zero() {
-                            if tx.send(Ok((0, f_open, f_read, f_write))).is_err() {
-                                return;
-                            }
-                        }
-                    }
+                    run_worker_loop(arch, files_ref, idx_ref, &tx);
                 });
             }
             drop(tx);
@@ -375,4 +269,117 @@ pub fn unpack_zip(archive_path: String, app: Option<&AppHandle>) -> Result<Quick
             .to_string(),
         deleted_original: false,
     })
+}
+
+fn run_worker_loop<R: Read + Seek>(
+    mut arch: ZipArchive<R>,
+    files: &[(usize, PathBuf, u64)],
+    next_idx: &AtomicUsize,
+    tx: &mpsc::Sender<Result<(u64, Duration, Duration, Duration), String>>,
+) {
+    let mut buf = vec![0u8; PARALLEL_UNPACK_BUF];
+    let mut small_buf = Vec::with_capacity(SMALL_UNPACK_MAX_BYTES as usize);
+    loop {
+        if is_cancelled() {
+            break;
+        }
+        let pos = next_idx.fetch_add(1, Ordering::Relaxed);
+        if pos >= files.len() {
+            break;
+        }
+        let (entry_idx, ref out_path, size) = files[pos];
+        let mut entry = match arch.by_index(entry_idx) {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = tx.send(Err(format!("ошибка чтения элемента архива: {e}")));
+                break;
+            }
+        };
+        let t_open = Instant::now();
+        let mut out_file = match create_sequential_write(out_path) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = tx.send(Err(format!(
+                    "не удалось создать файл {}: {e}",
+                    out_path.display()
+                )));
+                break;
+            }
+        };
+        if size >= SET_LEN_MIN_BYTES {
+            let _ = out_file.set_len(size);
+        }
+        let mut f_open = t_open.elapsed();
+        let mut f_read = Duration::ZERO;
+        let mut f_write = Duration::ZERO;
+
+        if size <= SMALL_UNPACK_MAX_BYTES {
+            small_buf.clear();
+            let t_read = Instant::now();
+            if let Err(e) = entry.read_to_end(&mut small_buf) {
+                let _ = tx.send(Err(format!(
+                    "ошибка распаковки {}: {e}",
+                    out_path.display()
+                )));
+                return;
+            }
+            f_read += t_read.elapsed();
+            let t_write = Instant::now();
+            if let Err(e) = out_file.write_all(&small_buf) {
+                let _ = tx.send(Err(format!("ошибка записи {}: {e}", out_path.display())));
+                return;
+            }
+            f_write += t_write.elapsed();
+            if tx
+                .send(Ok((small_buf.len() as u64, f_open, f_read, f_write)))
+                .is_err()
+            {
+                return;
+            }
+            continue;
+        }
+
+        loop {
+            if is_cancelled() {
+                return;
+            }
+            let t_read = Instant::now();
+            let n = match entry.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(format!(
+                        "ошибка распаковки {}: {e}",
+                        out_path.display()
+                    )));
+                    return;
+                }
+            };
+            f_read += t_read.elapsed();
+            if n == 0 {
+                break;
+            }
+            let t_write = Instant::now();
+            if let Err(e) = out_file.write_all(&buf[..n]) {
+                let _ = tx.send(Err(format!("ошибка записи {}: {e}", out_path.display())));
+                return;
+            }
+            f_write += t_write.elapsed();
+            if tx
+                .send(Ok((
+                    n as u64,
+                    std::mem::take(&mut f_open),
+                    std::mem::take(&mut f_read),
+                    std::mem::take(&mut f_write),
+                )))
+                .is_err()
+            {
+                return;
+            }
+        }
+        if (!f_open.is_zero() || !f_read.is_zero() || !f_write.is_zero())
+            && tx.send(Ok((0, f_open, f_read, f_write))).is_err()
+        {
+            return;
+        }
+    }
 }

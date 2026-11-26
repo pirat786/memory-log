@@ -207,12 +207,26 @@ mod quick_files {
     #[test]
     #[ignore]
     fn profile_zip_dir_from_env() {
+        let log_path = std::env::temp_dir().join(format!("ml_zip_profile_{}.log", uuid::Uuid::new_v4()));
+        crate::log::init(log_path.clone());
+
+        if let Ok(arch) = std::env::var("ML_PROFILE_UNPACK_ARCHIVE") {
+            let urep = unpack_zip(arch, None).expect("unpack failed");
+            print_speed("UNPACK profile", &urep);
+            assert!(urep.count > 0);
+            let _ = fs::remove_dir_all(&urep.output_path);
+            if let Ok(log_contents) = fs::read_to_string(&log_path) {
+                println!("=== ZIP PROFILE LOG ===\n{log_contents}=== END LOG ===");
+            }
+            let _ = fs::remove_file(&log_path);
+            return;
+        }
+
         let dir = std::env::var("ML_PROFILE_ZIP_DIR")
             .expect("ML_PROFILE_ZIP_DIR must be set");
         let mode = std::env::var("ML_PROFILE_ZIP_MODE").unwrap_or_else(|_| "fast".into());
         let profile_unpack = std::env::var("ML_PROFILE_UNPACK").is_ok_and(|v| v == "1");
-        let log_path = std::env::temp_dir().join(format!("ml_zip_profile_{}.log", uuid::Uuid::new_v4()));
-        crate::log::init(log_path.clone());
+        let keep_archive = std::env::var("ML_PROFILE_KEEP_ARCHIVE").is_ok_and(|v| v == "1");
 
         let res = if mode == "solid" {
             pack_solid(vec![dir], None)
@@ -237,7 +251,11 @@ mod quick_files {
                 assert_eq!(urep.count, rep.count);
                 let _ = fs::remove_dir_all(&urep.output_path);
             }
-            let _ = fs::remove_file(&rep.output_path);
+            if keep_archive {
+                println!("KEEP_ARCHIVE={}", rep.output_path);
+            } else {
+                let _ = fs::remove_file(&rep.output_path);
+            }
         }
         if let Ok(log_contents) = fs::read_to_string(&log_path) {
             println!("=== ZIP PROFILE LOG ===\n{log_contents}=== END LOG ===");
@@ -934,6 +952,91 @@ mod quick_files {
         assert_eq!(fs::read_to_string(su_dir.join("same.txt")).unwrap(), "first");
         assert_eq!(fs::read_to_string(su_dir.join("same (2).txt")).unwrap(), "second");
         assert_eq!(fs::read_to_string(su_dir.join("sub_folder/inside.txt")).unwrap(), "folder");
+    }
+
+    #[test]
+    fn hybrid_solid_multi_frame_roundtrip() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("hybrid_src");
+        fs::create_dir_all(&src).unwrap();
+
+        let code = "pub fn hello() { println!(\"world\"); }\n".repeat(1200);
+        let json = r#"{"ok":true,"items":[1,2,3,4,5]}"#.repeat(900);
+        let mut x: u32 = 0xCAFE_BABE;
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        for _ in 0..(200 * 1024) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            jpg.push((x & 0xFF) as u8);
+        }
+        let mut mp4 = vec![0x00, 0x00, 0x00, 0x20, b'f', b't', b'y', b'p'];
+        for _ in 0..(180 * 1024) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            mp4.push((x & 0xFF) as u8);
+        }
+
+        fs::write(src.join("main.rs"), &code).unwrap();
+        fs::write(src.join("data.json"), &json).unwrap();
+        fs::write(src.join("photo.jpg"), &jpg).unwrap();
+        fs::write(src.join("clip.mp4"), &mp4).unwrap();
+
+        let rep = pack_solid(vec![src.to_string_lossy().into_owned()], None).unwrap();
+        assert_eq!(rep.count, 4);
+        assert!(rep.output_bytes < (jpg.len() + mp4.len() + 4096) as u64);
+
+        let unp = unpack_solid(rep.output_path, None).unwrap();
+        assert_eq!(unp.count, 4);
+        let out_dir = Path::new(&unp.output_path);
+        assert_eq!(fs::read_to_string(out_dir.join("main.rs")).unwrap(), code);
+        assert_eq!(fs::read_to_string(out_dir.join("data.json")).unwrap(), json);
+        assert_eq!(fs::read(out_dir.join("photo.jpg")).unwrap(), jpg);
+        assert_eq!(fs::read(out_dir.join("clip.mp4")).unwrap(), mp4);
+    }
+
+    #[test]
+    fn ultra_tar_zst_pack_and_auto_unpack() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("ultra_src");
+        fs::create_dir_all(&src).unwrap();
+
+        let text = "Memory Log ultra preset roundtrip line 0123456789abcdef\n".repeat(1500);
+        fs::write(src.join("notes.txt"), &text).unwrap();
+        fs::write(src.join("copy.log"), &text).unwrap();
+
+        let rep = handle_drop(
+            vec![src.to_string_lossy().into_owned()],
+            "zip",
+            1920,
+            82,
+            "ultra",
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(rep.output_path.ends_with(".tar.zst"));
+        assert_eq!(rep.count, 2);
+        assert!(rep.output_bytes < rep.input_bytes / 10);
+
+        let unp = handle_drop(
+            vec![rep.output_path],
+            "auto",
+            1920,
+            82,
+            "fast",
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(unp.kind, "zip-unpack");
+        assert_eq!(unp.count, 2);
+        let out_dir = Path::new(&unp.output_path);
+        assert_eq!(fs::read_to_string(out_dir.join("notes.txt")).unwrap(), text);
+        assert_eq!(fs::read_to_string(out_dir.join("copy.log")).unwrap(), text);
     }
 
     #[test]

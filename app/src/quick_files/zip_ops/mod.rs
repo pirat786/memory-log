@@ -5,7 +5,7 @@ mod solid;
 mod unpack;
 
 pub use pack::pack_zip;
-pub use solid::{pack_solid, unpack_gz, unpack_solid, unpack_tar_gz};
+pub use solid::{pack_solid, pack_solid_with_level, unpack_gz, unpack_solid, unpack_tar_gz, ULTRA_SOLID_ZSTD_LEVEL};
 pub use unpack::unpack_zip;
 
 use std::collections::HashSet;

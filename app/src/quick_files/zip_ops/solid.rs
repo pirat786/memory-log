@@ -12,13 +12,88 @@ use walkdir::WalkDir;
 
 use super::bg_writer::BgFileWriter;
 use super::{
-    check_free_space, detect_hdd_mode, unique_entry_name, ZipEntryTask, HUGE_BUF_HDD, HUGE_BUF_SSD,
-    UNPACK_BUF_HDD, UNPACK_BUF_SSD,
+    check_free_space, detect_hdd_mode, is_incompressible_ext, unique_entry_name, ZipEntryTask,
+    HUGE_BUF_HDD, HUGE_BUF_SSD, UNPACK_BUF_HDD, UNPACK_BUF_SSD,
 };
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read, same_drive};
 use crate::quick_files::{ext_lower, is_cancelled, unique_path, ProgressReporter, QuickFileReport};
 
-const SOLID_ZSTD_LEVEL: i32 = 9;
+const DEFAULT_SOLID_ZSTD_LEVEL: i32 = 12;
+pub const ULTRA_SOLID_ZSTD_LEVEL: i32 = 19;
+const SOLID_FAST_FRAME_LEVEL: i32 = -5;
+
+fn solid_config(default_level: i32) -> (i32, bool) {
+    let level = std::env::var("ML_SOLID_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .map(|l| l.clamp(-5, 22))
+        .unwrap_or(default_level);
+    let hybrid = std::env::var("ML_SOLID_HYBRID")
+        .ok()
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    (level, hybrid)
+}
+
+struct MultiFrameZstdWriter<W: Write> {
+    enc: Option<zstd::stream::write::Encoder<'static, W>>,
+}
+
+impl<W: Write> MultiFrameZstdWriter<W> {
+    fn open_encoder(
+        inner: W,
+        level: i32,
+        workers: u32,
+        ldm: bool,
+    ) -> io::Result<zstd::stream::write::Encoder<'static, W>> {
+        let mut enc = zstd::stream::write::Encoder::new(inner, level)?;
+        let _ = enc.multithread(workers);
+        if ldm {
+            let _ = enc.long_distance_matching(true);
+        }
+        Ok(enc)
+    }
+
+    fn new(inner: W, level: i32, workers: u32, ldm: bool) -> io::Result<Self> {
+        Ok(Self {
+            enc: Some(Self::open_encoder(inner, level, workers, ldm)?),
+        })
+    }
+
+    fn switch_frame(&mut self, level: i32, workers: u32, ldm: bool) -> io::Result<()> {
+        let cur = self
+            .enc
+            .take()
+            .ok_or_else(|| io::Error::other("zstd encoder missing"))?;
+        let inner = cur.finish()?;
+        self.enc = Some(Self::open_encoder(inner, level, workers, ldm)?);
+        Ok(())
+    }
+
+    fn finish(mut self) -> io::Result<W> {
+        let cur = self
+            .enc
+            .take()
+            .ok_or_else(|| io::Error::other("zstd encoder missing"))?;
+        cur.finish()
+    }
+}
+
+impl<W: Write> Write for MultiFrameZstdWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.enc
+            .as_mut()
+            .ok_or_else(|| io::Error::other("zstd encoder closed"))?
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.enc
+            .as_mut()
+            .ok_or_else(|| io::Error::other("zstd encoder closed"))?
+            .flush()
+    }
+}
 
 struct CancelProgressReader<'a, 'b, R: Read> {
     inner: R,
@@ -84,6 +159,14 @@ impl<R: Read> Read for CountingReader<R> {
 }
 
 pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    pack_solid_with_level(paths, DEFAULT_SOLID_ZSTD_LEVEL, app)
+}
+
+pub fn pack_solid_with_level(
+    paths: Vec<String>,
+    default_level: i32,
+    app: Option<&AppHandle>,
+) -> Result<QuickFileReport, String> {
     let started = Instant::now();
     let valid: Vec<PathBuf> = paths
         .into_iter()
@@ -118,14 +201,7 @@ pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFi
     let out_path = unique_path(out_dir, &base_stem, "tar.zst");
     let hdd_mode = detect_hdd_mode(&out_path, first);
     let same_drv = same_drive(&out_path, first);
-    crate::log::info(&format!(
-        "solid-pack start: paths={}, hdd={}, same_drive={}, level={}, out={}",
-        valid.len(),
-        hdd_mode,
-        same_drv,
-        SOLID_ZSTD_LEVEL,
-        out_path.display()
-    ));
+    let (solid_level, hybrid) = solid_config(default_level);
 
     let out_canon = fs::canonicalize(out_dir)
         .ok()
@@ -215,12 +291,44 @@ pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFi
 
     check_free_space(out_dir, total_expected / 2)?;
 
-    // Group identical file extensions together in the solid stream for maximum dictionary reuse.
-    entries.sort_by(|a, b| {
-        ext_lower(&a.path)
-            .cmp(&ext_lower(&b.path))
-            .then_with(|| a.zip_name.cmp(&b.zip_name))
-    });
+    let (comp_entries, incomp_entries) = if hybrid {
+        let mut comp = Vec::new();
+        let mut incomp = Vec::new();
+        for t in entries {
+            if is_incompressible_ext(&ext_lower(&t.path)) {
+                incomp.push(t);
+            } else {
+                comp.push(t);
+            }
+        }
+        let sort_fn = |a: &ZipEntryTask, b: &ZipEntryTask| {
+            ext_lower(&a.path)
+                .cmp(&ext_lower(&b.path))
+                .then_with(|| a.zip_name.cmp(&b.zip_name))
+        };
+        comp.sort_by(sort_fn);
+        incomp.sort_by(sort_fn);
+        (comp, incomp)
+    } else {
+        entries.sort_by(|a, b| {
+            ext_lower(&a.path)
+                .cmp(&ext_lower(&b.path))
+                .then_with(|| a.zip_name.cmp(&b.zip_name))
+        });
+        (entries, Vec::new())
+    };
+
+    crate::log::info(&format!(
+        "solid-pack start: paths={}, hdd={}, same_drive={}, hybrid={}, level={}, comp={}, incomp={}, out={}",
+        valid.len(),
+        hdd_mode,
+        same_drv,
+        hybrid,
+        solid_level,
+        comp_entries.len(),
+        incomp_entries.len(),
+        out_path.display()
+    ));
 
     let out_file = create_sequential_write(&out_path)
         .map_err(|e| format!("не удалось создать архив {}: {e}", out_path.display()))?;
@@ -237,12 +345,15 @@ pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFi
         .map(|n| n.get())
         .unwrap_or(4)
         .clamp(2, 8);
-    let mut encoder = zstd::stream::write::Encoder::new(bg_writer, SOLID_ZSTD_LEVEL)
+    let (init_level, init_ldm) = if comp_entries.is_empty() && !incomp_entries.is_empty() {
+        (SOLID_FAST_FRAME_LEVEL, false)
+    } else {
+        (solid_level, true)
+    };
+    let zstd_writer = MultiFrameZstdWriter::new(bg_writer, init_level, workers as u32, init_ldm)
         .map_err(|e| format!("ошибка инициализации Zstd: {e}"))?;
-    let _ = encoder.multithread(workers as u32);
-    let _ = encoder.long_distance_matching(true);
 
-    let mut builder = tar::Builder::new(encoder);
+    let mut builder = tar::Builder::new(zstd_writer);
     let mut progress = ProgressReporter::new(app, total_expected);
     let read_buf_size = if hdd_mode { HUGE_BUF_HDD } else { HUGE_BUF_SSD };
     let mut total_in = 0u64;
@@ -251,40 +362,51 @@ pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFi
     let mut last_log_bytes = 0u64;
 
     let res: Result<(), String> = (|| {
-        for task in &entries {
-            if is_cancelled() {
-                return Err("отменено".into());
+        for (phase_idx, group) in [&comp_entries, &incomp_entries].into_iter().enumerate() {
+            if group.is_empty() {
+                continue;
             }
-            let file = open_sequential_read(&task.path)
-                .map_err(|e| format!("не удалось открыть {}: {e}", task.path.display()))?;
-            let meta = file
-                .metadata()
-                .map_err(|e| format!("ошибка метаданных {}: {e}", task.path.display()))?;
-            let file_len = meta.len();
-
-            let mut header = tar::Header::new_gnu();
-            header.set_metadata(&meta);
-            header.set_size(file_len);
-            header.set_cksum();
-
-            let mut reader = CancelProgressReader {
-                inner: BufReader::with_capacity(read_buf_size, file.take(file_len)),
-                progress: &mut progress,
-                read_bytes: total_in,
-                last_log: &mut last_log,
-                last_log_bytes: &mut last_log_bytes,
-                started,
-                total_expected,
-            };
-
-            if let Err(e) = builder.append_data(&mut header, &task.zip_name, &mut reader) {
-                if is_cancelled() || e.kind() == io::ErrorKind::Interrupted {
+            if phase_idx == 1 && !comp_entries.is_empty() {
+                builder
+                    .get_mut()
+                    .switch_frame(SOLID_FAST_FRAME_LEVEL, workers as u32, false)
+                    .map_err(|e| format!("ошибка переключения фрейма Zstd: {e}"))?;
+            }
+            for task in group {
+                if is_cancelled() {
                     return Err("отменено".into());
                 }
-                return Err(format!("ошибка упаковки {}: {e}", task.zip_name));
+                let file = open_sequential_read(&task.path)
+                    .map_err(|e| format!("не удалось открыть {}: {e}", task.path.display()))?;
+                let meta = file
+                    .metadata()
+                    .map_err(|e| format!("ошибка метаданных {}: {e}", task.path.display()))?;
+                let file_len = meta.len();
+
+                let mut header = tar::Header::new_gnu();
+                header.set_metadata(&meta);
+                header.set_size(file_len);
+                header.set_cksum();
+
+                let mut reader = CancelProgressReader {
+                    inner: BufReader::with_capacity(read_buf_size, file.take(file_len)),
+                    progress: &mut progress,
+                    read_bytes: total_in,
+                    last_log: &mut last_log,
+                    last_log_bytes: &mut last_log_bytes,
+                    started,
+                    total_expected,
+                };
+
+                if let Err(e) = builder.append_data(&mut header, &task.zip_name, &mut reader) {
+                    if is_cancelled() || e.kind() == io::ErrorKind::Interrupted {
+                        return Err("отменено".into());
+                    }
+                    return Err(format!("ошибка упаковки {}: {e}", task.zip_name));
+                }
+                total_in = reader.read_bytes;
+                count += 1;
             }
-            total_in = reader.read_bytes;
-            count += 1;
         }
         for (dir_path, dir_name) in &empty_dirs {
             if is_cancelled() {

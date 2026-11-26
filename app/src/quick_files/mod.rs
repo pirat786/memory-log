@@ -241,10 +241,10 @@ fn pack_and_maybe_delete(
     app: Option<&AppHandle>,
 ) -> Result<QuickFileReport, String> {
     let orig_paths = if delete_after { Some(paths.clone()) } else { None };
-    let mut rep = if zip_mode == "solid" {
-        zip_ops::pack_solid(paths, app)?
-    } else {
-        zip_ops::pack_zip(paths, zip_mode, app)?
+    let mut rep = match zip_mode {
+        "solid" => zip_ops::pack_solid(paths, app)?,
+        "ultra" => zip_ops::pack_solid_with_level(paths, zip_ops::ULTRA_SOLID_ZSTD_LEVEL, app)?,
+        _ => zip_ops::pack_zip(paths, zip_mode, app)?,
     };
     if let Some(orig) = orig_paths {
         if rep.kind == "zip-pack"
