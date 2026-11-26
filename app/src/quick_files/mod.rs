@@ -1,8 +1,8 @@
 pub mod images;
+pub mod io_hints;
 pub mod zip_ops;
 
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -33,6 +33,7 @@ pub struct QuickFileReport {
     pub output_bytes: u64,
     pub elapsed_ms: u128,
     pub detail: String,
+    pub deleted_original: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,28 +118,6 @@ pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     dir.join(format!("{stem}_{}{dot_ext}", uuid::Uuid::new_v4()))
 }
 
-pub(crate) fn copy_stream<R: io::Read, W: io::Write>(
-    reader: &mut R,
-    writer: &mut W,
-    progress: &mut ProgressReporter<'_>,
-) -> io::Result<u64> {
-    let mut buf = vec![0u8; IO_BUF_SIZE];
-    let mut total = 0u64;
-    loop {
-        if is_cancelled() {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "отменено"));
-        }
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buf[..n])?;
-        total += n as u64;
-        progress.add(n as u64);
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 pub use images::process_images;
 #[cfg(test)]
@@ -150,6 +129,7 @@ pub fn handle_drop(
     max_dim: u32,
     quality: u8,
     zip_mode: &str,
+    delete_after: bool,
     app: Option<&AppHandle>,
 ) -> Result<QuickFileReport, String> {
     CANCEL_DROP.store(false, Ordering::Relaxed);
@@ -157,7 +137,7 @@ pub fn handle_drop(
         return Err("список файлов пуст".into());
     }
     if mode == "zip" {
-        return zip_ops::pack_zip(paths, zip_mode, app);
+        return pack_and_maybe_delete(paths, zip_mode, delete_after, app);
     }
     if matches!(mode, "compress" | "webp" | "jpg" | "jpeg" | "strip") {
         return images::process_images(paths, mode, max_dim, quality, app);
@@ -177,7 +157,33 @@ pub fn handle_drop(
         let img_mode = if mode == "auto" { "compress" } else { mode };
         return images::process_images(paths, img_mode, max_dim, quality, app);
     }
-    zip_ops::pack_zip(paths, zip_mode, app)
+    pack_and_maybe_delete(paths, zip_mode, delete_after, app)
+}
+
+fn pack_and_maybe_delete(
+    paths: Vec<String>,
+    zip_mode: &str,
+    delete_after: bool,
+    app: Option<&AppHandle>,
+) -> Result<QuickFileReport, String> {
+    let orig_paths = if delete_after { Some(paths.clone()) } else { None };
+    let mut rep = zip_ops::pack_zip(paths, zip_mode, app)?;
+    if let Some(orig) = orig_paths {
+        if rep.kind == "zip-pack"
+            && rep.output_bytes > 0
+            && Path::new(&rep.output_path).is_file()
+            && !is_cancelled()
+        {
+            if let Ok(del) = fast_delete(orig, None) {
+                rep.deleted_original = true;
+                crate::log::info(&format!(
+                    "zip-pack deleted original: files={}, bytes={}",
+                    del.count, del.input_bytes
+                ));
+            }
+        }
+    }
+    Ok(rep)
 }
 
 fn is_unsafe_delete_target(p: &Path) -> bool {
@@ -312,5 +318,6 @@ pub fn fast_delete(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickF
         output_bytes: 0,
         elapsed_ms: started.elapsed().as_millis(),
         detail: format!("{count} f"),
+        deleted_original: false,
     })
 }

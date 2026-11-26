@@ -470,5 +470,6 @@ pub fn process_images(
         output_bytes: total_out,
         elapsed_ms: started.elapsed().as_millis(),
         detail: last_dims,
+        deleted_original: false,
     })
 }

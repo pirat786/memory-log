@@ -291,6 +291,17 @@
     .lock-row button:hover { border-color: #d9534f; color: #d9534f; }
     .drop-zone.danger { border-color: rgba(217, 83, 79, .45); color: #d9534f; }
     .btn-danger { border-color: #d9534f !important; color: #d9534f !important; }
+    .drop-opt {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .drop-opt input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+    .drop-opt:has(input:checked) { color: #d9534f; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -356,6 +367,10 @@
           <option value="max" data-i18n="widget.files.zip_max">Очень сильное</option>
         </select>
       </div>
+      <label id="dropDeleteAfterRow" class="drop-opt">
+        <input id="dropDeleteAfter" type="checkbox">
+        <span data-i18n="widget.files.delete_after_zip">Удалять оригинал после архива</span>
+      </label>
       <div id="dropZone" class="drop-zone" data-i18n="widget.files.drop_hint">Перетащи фото, файлы или ZIP сюда</div>
       <div id="dropBar" class="drop-bar" hidden><div id="dropFill" class="drop-fill"></div></div>
       <div id="dropResult" class="drop-result" hidden>

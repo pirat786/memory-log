@@ -385,6 +385,8 @@
   "widget.files.delete_confirm": "Delete permanently?",
   "widget.files.delete_btn": "Delete",
   "widget.files.delete_done": "Deleted",
+  "widget.files.delete_after_zip": "Delete original after archive",
+  "widget.files.deleted_original": "original deleted",
   "widget.files.lock_free": "File is not locked",
   "widget.files.lock_kill": "Kill",
   "widget.ctrl.fix_layout": "Layout",

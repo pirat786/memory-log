@@ -396,6 +396,7 @@ pub async fn quick_drop(
     max_dim: u32,
     quality: u8,
     zip_mode: Option<String>,
+    delete_after: Option<bool>,
 ) -> Result<crate::quick_files::QuickFileReport, String> {
     tauri::async_runtime::spawn_blocking(move || {
         crate::quick_files::handle_drop(
@@ -404,6 +405,7 @@ pub async fn quick_drop(
             max_dim,
             quality,
             zip_mode.as_deref().unwrap_or("fast"),
+            delete_after.unwrap_or(false),
             Some(&app),
         )
     })

@@ -163,8 +163,11 @@ mod quick_files {
         }
     }
 
+    static ZIP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn large_zip_pack_and_unpack_streaming() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let src_dir = dir.path().join("payload");
         fs::create_dir_all(&src_dir).unwrap();
@@ -199,6 +202,31 @@ mod quick_files {
     }
 
     #[test]
+    #[ignore]
+    fn profile_zip_dir_from_env() {
+        let dir = std::env::var("ML_PROFILE_ZIP_DIR")
+            .expect("ML_PROFILE_ZIP_DIR must be set");
+        let mode = std::env::var("ML_PROFILE_ZIP_MODE").unwrap_or_else(|_| "fast".into());
+        let log_path = std::env::temp_dir().join(format!("ml_zip_profile_{}.log", uuid::Uuid::new_v4()));
+        crate::log::init(log_path.clone());
+
+        let res = pack_zip(vec![dir], &mode, None);
+        if let Ok(ref rep) = res {
+            let f = File::open(&rep.output_path).expect("open generated zip");
+            let archive = zip::ZipArchive::new(f).expect("read generated zip");
+            assert_eq!(archive.len(), rep.count);
+            drop(archive);
+            let _ = fs::remove_file(&rep.output_path);
+        }
+        if let Ok(log_contents) = fs::read_to_string(&log_path) {
+            println!("=== ZIP PROFILE LOG ===\n{log_contents}=== END LOG ===");
+        }
+        let _ = fs::remove_file(&log_path);
+        let rep = res.expect("pack_zip failed");
+        print_speed(&format!("ZIP profile ({mode})"), &rep);
+    }
+
+    #[test]
     fn large_image_compress_and_resize() {
         let dir = TestDir::new();
         let img_path = dir.path().join("huge.png");
@@ -225,6 +253,7 @@ mod quick_files {
 
     #[test]
     fn unpack_blocks_zip_slip() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let zip_path = dir.path().join("evil.zip");
         {
@@ -357,6 +386,7 @@ mod quick_files {
 
     #[test]
     fn processes_folder_of_images_and_fast_deletes() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let src = dir.path().join("photos");
         let nested = src.join("sub");
@@ -373,6 +403,7 @@ mod quick_files {
             1920,
             82,
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -392,6 +423,7 @@ mod quick_files {
 
     #[test]
     fn auto_mode_compresses_photo_only_folder_and_zips_mixed_folder() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let photo_dir = dir.path().join("album");
         let mixed_dir = dir.path().join("mixed");
@@ -410,6 +442,7 @@ mod quick_files {
             1920,
             82,
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -422,6 +455,7 @@ mod quick_files {
             1920,
             82,
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -431,6 +465,7 @@ mod quick_files {
 
     #[test]
     fn auto_mode_ignores_system_junk_in_photo_folder_and_unpacks_zip() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let album = dir.path().join("camera_roll");
         fs::create_dir_all(&album).unwrap();
@@ -446,6 +481,7 @@ mod quick_files {
             1920,
             82,
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -457,13 +493,14 @@ mod quick_files {
         fs::create_dir_all(&zip_src).unwrap();
         fs::write(zip_src.join("readme.txt"), b"hello world").unwrap();
         let packed = pack_zip(vec![zip_src.to_string_lossy().into_owned()], "normal", None).unwrap();
-        let unpacked = handle_drop(vec![packed.output_path], "auto", 1920, 82, "fast", None).unwrap();
+        let unpacked = handle_drop(vec![packed.output_path], "auto", 1920, 82, "fast", false, None).unwrap();
         assert_eq!(unpacked.kind, "zip-unpack");
         assert_eq!(unpacked.count, 1);
     }
 
     #[test]
     fn zip_modes_fast_and_max_produce_expected_sizes() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let text_file = dir.path().join("repetitive.txt");
         let raw = "Memory Log compression check line 0123456789\n".repeat(4000);
@@ -478,7 +515,75 @@ mod quick_files {
     }
 
     #[test]
+    fn pack_zip_cancel_does_not_deadlock() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("cancel_payload");
+        fs::create_dir_all(&src).unwrap();
+        let payload = vec![0x5Au8; 512 * 1024];
+        for i in 0..80 {
+            fs::write(src.join(format!("img_{i:03}.png")), &payload).unwrap();
+        }
+
+        let src_str = src.to_string_lossy().into_owned();
+        let t = std::thread::spawn(move || pack_zip(vec![src_str], "fast", None));
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        crate::quick_files::cancel_drop();
+        let res = t.join().expect("pack_zip thread panicked");
+        // Reset flag for subsequent tests
+        crate::quick_files::handle_drop(vec![], "zip", 0, 82, "fast", false, None).ok();
+        match res {
+            Err(e) => assert!(e.contains("отменено"), "unexpected err: {e}"),
+            Ok(rep) => {
+                // If it finished before cancel fired, still ensure no hang and clean up
+                let _ = fs::remove_file(&rep.output_path);
+            }
+        }
+    }
+
+    #[test]
+    fn handle_drop_delete_after_zip_removes_originals() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("to_archive");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.bin"), vec![1u8; 4096]).unwrap();
+        fs::write(src.join("b.txt"), b"hello delete after zip").unwrap();
+
+        let rep = handle_drop(
+            vec![src.to_string_lossy().into_owned()],
+            "zip",
+            1920,
+            82,
+            "fast",
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(rep.kind, "zip-pack");
+        assert!(rep.deleted_original);
+        assert!(!src.exists());
+        assert!(Path::new(&rep.output_path).is_file());
+    }
+
+    #[test]
+    fn pack_zip_preserves_full_folder_name_with_dots() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("scans.2026.part1");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), b"hello").unwrap();
+
+        let rep = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        assert_eq!(
+            Path::new(&rep.output_path).file_name(),
+            Some(std::ffi::OsStr::new("scans.2026.part1.zip"))
+        );
+    }
+
+    #[test]
     fn zip_max_mode_compresses_incompressible_extensions() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let exe_file = dir.path().join("dummy.exe");
         let payload = vec![b'A'; 128 * 1024];

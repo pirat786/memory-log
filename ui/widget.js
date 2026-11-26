@@ -263,24 +263,63 @@ function fmtElapsed(ms) {
   return `${m}:${s}`;
 }
 
+let dropEmaBytesPerMs = 0;
+let dropLastSample = null;
+let dropDisplayedEtaMs = null;
+let dropLastEtaAt = 0;
+
+function resetDropMetrics(now) {
+  dropEmaBytesPerMs = 0;
+  dropLastSample = { t: now, done: 0 };
+  dropDisplayedEtaMs = null;
+  dropLastEtaAt = 0;
+}
+
+function fmtSpeedMbps(mbps) {
+  if (!Number.isFinite(mbps) || mbps <= 0) return "";
+  return mbps >= 100 ? `${Math.round(mbps)} MB/s` : `${mbps.toFixed(1)} MB/s`;
+}
+
 function fmtSpeed(bytes, ms) {
   if (ms < 300 || bytes <= 0) return "";
-  const mbps = (bytes / 1048576) / (ms / 1000);
-  return mbps >= 100 ? `${Math.round(mbps)} MB/s` : `${mbps.toFixed(1)} MB/s`;
+  return fmtSpeedMbps((bytes / 1048576) / (ms / 1000));
+}
+
+function fmtEta(ms) {
+  let secs = Math.max(1, Math.round(ms / 1000));
+  if (secs >= 15) {
+    secs = Math.max(15, Math.round(secs / 5) * 5);
+  }
+  if (secs < 60) return `~${secs} s`;
+  const m = Math.floor(secs / 60);
+  const s = String(secs % 60).padStart(2, "0");
+  return `~${m}:${s}`;
 }
 
 function renderDropProgress() {
   if (!dropBusy) return;
-  const elapsedMs = Date.now() - dropStartedAt;
+  const now = Date.now();
+  const elapsedMs = now - dropStartedAt;
   const elapsed = fmtElapsed(elapsedMs);
   const { done, total, pct } = dropProgress;
   $("dropFill").style.width = `${pct}%`;
   if (total > 0) {
-    const spd = fmtSpeed(done, elapsedMs);
+    const bytesPerMs =
+      dropEmaBytesPerMs > 0
+        ? dropEmaBytesPerMs
+        : elapsedMs >= 400 && done > 0
+          ? done / elapsedMs
+          : 0;
+    const spd = bytesPerMs > 0 ? fmtSpeedMbps((bytesPerMs * 1000) / 1048576) : "";
     let eta = "";
-    if (done > 0 && done < total && elapsedMs >= 500) {
-      const etaMs = Math.round(((total - done) / done) * elapsedMs);
-      eta = `~${fmtElapsed(etaMs)}`;
+    if (elapsedMs >= 2000 && done > 0 && done < total && bytesPerMs > 0) {
+      if (dropDisplayedEtaMs === null || now - dropLastEtaAt >= 1000) {
+        const rawEtaMs = (total - done) / bytesPerMs;
+        dropDisplayedEtaMs =
+          dropDisplayedEtaMs === null ? rawEtaMs : dropDisplayedEtaMs * 0.65 + rawEtaMs * 0.35;
+        dropLastEtaAt = now;
+      }
+      eta = fmtEta(dropDisplayedEtaMs);
     }
     const parts = [`${pct}%`];
     if (spd) parts.push(spd);
@@ -306,6 +345,7 @@ function syncDropControls() {
   const m = $("dropMode").value;
   $("dropZipMode").hidden = m !== "zip";
   $("dropMaxDim").hidden = m === "zip" || m === "strip" || m === "locks" || m === "delete";
+  $("dropDeleteAfterRow").hidden = m !== "zip" && m !== "auto";
   if (m !== "locks" && m !== "delete") $("lockList").hidden = true;
   $("dropZone").classList.toggle("danger", m === "delete");
   if (!dropBusy) {
@@ -316,6 +356,7 @@ function syncDropControls() {
 restoreSelect("dropMode", "widgetDropMode", "auto");
 restoreSelect("dropMaxDim", "widgetDropMaxDim", "1920");
 restoreSelect("dropZipMode", "widgetDropZipMode", "fast");
+$("dropDeleteAfter").checked = localStorage.getItem("widgetDropDeleteAfter") === "1";
 
 $("dropMode").onchange = () => {
   localStorage.setItem("widgetDropMode", $("dropMode").value);
@@ -327,11 +368,26 @@ $("dropMaxDim").onchange = () => {
 $("dropZipMode").onchange = () => {
   localStorage.setItem("widgetDropZipMode", $("dropZipMode").value);
 };
+$("dropDeleteAfter").onchange = () => {
+  localStorage.setItem("widgetDropDeleteAfter", $("dropDeleteAfter").checked ? "1" : "0");
+};
 syncDropControls();
 
 listen("quick-drop-progress", (e) => {
   if (!dropBusy || !e?.payload) return;
   dropProgress = e.payload;
+  const now = Date.now();
+  if (!dropLastSample) {
+    dropLastSample = { t: now, done: dropProgress.done };
+  } else {
+    const dt = now - dropLastSample.t;
+    const dBytes = dropProgress.done - dropLastSample.done;
+    if (dt >= 400 && dBytes > 0) {
+      const inst = dBytes / dt;
+      dropEmaBytesPerMs = dropEmaBytesPerMs === 0 ? inst : dropEmaBytesPerMs * 0.8 + inst * 0.2;
+      dropLastSample = { t: now, done: dropProgress.done };
+    }
+  }
   renderDropProgress();
 });
 
@@ -401,6 +457,7 @@ function confirmFastDelete(paths) {
     dropBusy = true;
     dropStartedAt = Date.now();
     dropProgress = { done: 0, total: 0, pct: 0 };
+    resetDropMetrics(dropStartedAt);
     clearInterval(dropTimer);
     dropTimer = setInterval(renderDropProgress, 250);
     $("dropZone").textContent = t("widget.files.processing");
@@ -456,6 +513,7 @@ listen("tauri://drag-drop", async (e) => {
   dropBusy = true;
   dropStartedAt = Date.now();
   dropProgress = { done: 0, total: 0, pct: 0 };
+  resetDropMetrics(dropStartedAt);
   clearInterval(dropTimer);
   dropTimer = setInterval(renderDropProgress, 250);
   $("dropZone").textContent = t("widget.files.processing");
@@ -474,6 +532,7 @@ listen("tauri://drag-drop", async (e) => {
       maxDim: Number($("dropMaxDim").value) || 0,
       quality: 82,
       zipMode: $("dropZipMode").value,
+      deleteAfter: $("dropDeleteAfter").checked,
     });
     lastDropPath = rep.output_path;
     const pct = rep.input_bytes > 0
@@ -482,7 +541,8 @@ listen("tauri://drag-drop", async (e) => {
     const delta = rep.kind === "zip-unpack"
       ? `${rep.count} f`
       : `${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)} (${pct >= 0 ? `-${pct}%` : `+${-pct}%`})`;
-    $("dropSummary").textContent = `${delta} • ${fmtElapsed(rep.elapsed_ms)}`;
+    const extra = rep.deleted_original ? ` • ${t("widget.files.deleted_original")}` : "";
+    $("dropSummary").textContent = `${delta} • ${fmtElapsed(rep.elapsed_ms)}${extra}`;
     $("dropReveal").hidden = !lastDropPath;
   } catch (err) {
     const msg = String(err);

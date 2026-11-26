@@ -385,6 +385,8 @@
   "widget.files.delete_confirm": "Удалить навсегда?",
   "widget.files.delete_btn": "Удалить",
   "widget.files.delete_done": "Удалено",
+  "widget.files.delete_after_zip": "Удалять оригинал после архива",
+  "widget.files.deleted_original": "оригинал удалён",
   "widget.files.lock_free": "Файл не занят",
   "widget.files.lock_kill": "Закрыть",
   "widget.ctrl.fix_layout": "Раскладка",
