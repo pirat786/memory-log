@@ -44,7 +44,17 @@ pub fn build(app: &App, state: Arc<AppState>) -> tauri::Result<()> {
                     crate::log::info(&err);
                 }
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                if crate::quick_files::is_drop_active() {
+                    let app_handle = app.clone();
+                    std::thread::spawn(move || {
+                        crate::quick_files::cancel_and_wait_drop(std::time::Duration::from_secs(5));
+                        app_handle.exit(0);
+                    });
+                } else {
+                    app.exit(0);
+                }
+            }
             _ => {}
         })
         .build(app)?;

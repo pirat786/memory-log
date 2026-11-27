@@ -356,8 +356,20 @@ pub fn widget_open(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn widget_resize(app: AppHandle, expanded: bool) {
-    crate::window::resize_widget(&app, expanded);
+pub fn widget_resize(app: AppHandle, expanded: bool, height: Option<f64>, focus: Option<bool>) {
+    crate::window::resize_widget(&app, expanded, height, focus.unwrap_or(true));
+}
+
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) {
+    crate::window::show_main(&app);
+}
+
+#[tauri::command]
+pub async fn pick_quick_paths(folders: bool) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::sys_tools::pick_paths(folders))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

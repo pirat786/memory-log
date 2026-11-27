@@ -27,8 +27,10 @@ pub fn show_main(app: &AppHandle) {
 
 const COLLAPSED_W: f64 = 16.0;
 const COLLAPSED_H: f64 = 68.0;
-const EXPANDED_W: f64 = 320.0;
-const EXPANDED_H: f64 = 340.0;
+const EXPANDED_W: f64 = 350.0;
+const EXPANDED_MIN_H: f64 = 220.0;
+const EXPANDED_MAX_H: f64 = 460.0;
+const EXPANDED_DEFAULT_H: f64 = 245.0;
 
 fn dock_right_edge(w: &WebviewWindow, width: f64, height: f64) {
     let Ok(Some(monitor)) = w.current_monitor().or_else(|_| w.primary_monitor()) else { return };
@@ -71,8 +73,15 @@ pub fn open_widget(app: &AppHandle) -> bool {
 
 pub fn toggle_widget(app: &AppHandle) -> bool {
     let open = if let Some(w) = app.get_webview_window("widget") {
-        let _ = w.close();
-        false
+        if crate::quick_files::is_drop_active() {
+            let _ = w.show();
+            let _ = w.set_focus();
+            let _ = w.emit("widget-expand", ());
+            true
+        } else {
+            let _ = w.close();
+            false
+        }
     } else {
         open_widget(app)
     };
@@ -96,11 +105,16 @@ pub fn trigger_widget(app: &AppHandle) {
     }
 }
 
-pub fn resize_widget(app: &AppHandle, expanded: bool) {
+pub fn resize_widget(app: &AppHandle, expanded: bool, height: Option<f64>, focus: bool) {
     if let Some(w) = app.get_webview_window("widget") {
         if expanded {
-            dock_right_edge(&w, EXPANDED_W, EXPANDED_H);
-            let _ = w.set_focus();
+            let h = height
+                .unwrap_or(EXPANDED_DEFAULT_H)
+                .clamp(EXPANDED_MIN_H, EXPANDED_MAX_H);
+            dock_right_edge(&w, EXPANDED_W, h);
+            if focus {
+                let _ = w.set_focus();
+            }
         } else {
             dock_right_edge(&w, COLLAPSED_W, COLLAPSED_H);
         }

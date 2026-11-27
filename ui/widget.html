@@ -48,26 +48,56 @@
       border-radius: 50%;
       background: var(--good);
     }
-    .edge-dot.awake { background: #fbbf24; }
-    .edge-dot.paused { background: #f87171; }
+    .edge-dot.awake, .head-dot.awake { background: #fbbf24; }
+    .edge-dot.paused, .head-dot.paused { background: #f87171; }
+    .edge-dot.busy, .head-dot.busy {
+      background: var(--accent);
+      animation: dot-pulse 1.1s ease-in-out infinite;
+    }
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: .4; transform: scale(1.35); }
+    }
     .panel {
-      width: calc(100% - 8px);
-      height: calc(100% - 8px);
-      margin: 4px;
+      width: calc(100% - 12px);
+      height: auto;
+      max-height: calc(100% - 12px);
+      margin: 6px;
       padding: 12px;
-      border-radius: 16px;
+      border-radius: 14px;
       border: 1px solid var(--line);
       background: var(--bg);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .38);
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto 1fr;
-      gap: 10px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, .22);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
       overflow: hidden;
     }
     [hidden] { display: none !important; }
     .head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-    .head strong { font-size: 13px; white-space: nowrap; }
+    .head-main {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 4px;
+      margin: -2px -4px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      min-width: 0;
+    }
+    .head-main:hover { color: var(--accent); background: var(--surface); }
+    .head-main strong { font-size: 13px; white-space: nowrap; }
+    .head-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--good);
+      flex-shrink: 0;
+    }
     .head-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
     .icon-btn {
       width: 24px;
@@ -80,10 +110,28 @@
       display: grid;
       place-items: center;
       padding: 0;
+      font-size: 12px;
     }
-    .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; min-height: 0; min-width: 0; overflow-y: auto; }
+    .icon-btn:hover { border-color: var(--accent); }
+    .icon-btn.active {
+      border-color: var(--accent);
+      background: rgba(102, 105, 228, .18);
+      color: var(--accent);
+    }
+    .tab-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      min-width: 0;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    .tab-pane::-webkit-scrollbar { display: none; }
     .timer-row { display: flex; align-items: center; gap: 6px; }
     .timer-row select {
+      flex: 1;
+      min-width: 0;
       padding: 6px 8px;
       border-radius: 9px;
       border: 1px solid var(--line);
@@ -92,41 +140,113 @@
       font: inherit;
       outline: none;
     }
-    .timer-row select { flex: 1; min-width: 0; }
     .drop-zone {
       border: 1.5px dashed var(--line);
       border-radius: 12px;
       background: var(--surface);
-      padding: 18px 12px;
+      padding: 14px 12px 12px;
       text-align: center;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.35;
+      cursor: pointer;
+      display: grid;
+      gap: 8px;
       transition: border-color .15s, background .15s, color .15s;
     }
+    .drop-zone:hover { border-color: var(--accent); color: var(--text); }
     .drop-zone.over {
       border-color: var(--accent);
       background: rgba(102, 105, 228, .12);
       color: var(--text);
     }
+    .drop-zone.danger-mode {
+      border-color: #d9534f;
+      background: rgba(217, 83, 79, .08);
+    }
+    .drop-pickers {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+    }
+    .drop-pickers button {
+      padding: 3px 10px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--text);
+      font: 600 11px/1.25 inherit;
+      cursor: pointer;
+    }
+    .drop-pickers button:hover { border-color: var(--accent); color: var(--accent); }
     .drop-result {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 6px;
+      gap: 8px;
       padding: 6px 8px;
       border-radius: 9px;
       background: var(--surface);
       font-size: 11px;
       min-width: 0;
     }
-    .drop-result span {
+    .drop-result > span {
       flex: 1;
       min-width: 0;
       font-size: 10.5px;
       line-height: 1.3;
       white-space: normal;
       overflow-wrap: anywhere;
+    }
+    .drop-res-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .drop-res-top {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+    .drop-res-name {
+      font-weight: 600;
+      font-size: 11.5px;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .drop-res-badge {
+      flex-shrink: 0;
+      padding: 1px 5px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      background: var(--bg);
+      color: var(--muted);
+      border: 1px solid var(--line);
+    }
+    .drop-res-badge.good {
+      color: #2e9e66;
+      border-color: rgba(46, 158, 102, .35);
+      background: rgba(118, 217, 169, .14);
+    }
+    .drop-res-badge.warn {
+      color: #d9534f;
+      border-color: rgba(217, 83, 79, .35);
+      background: rgba(217, 83, 79, .12);
+    }
+    .drop-res-meta {
+      font-size: 10.5px;
+      line-height: 1.25;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .drop-result button {
       padding: 3px 8px;
@@ -203,7 +323,7 @@
     .drop-queue-item button:hover { border-color: var(--accent); color: var(--text); }
     .drop-outputs { display: grid; gap: 6px; }
     .drop-outputs:empty { display: none; }
-    .drop-errors { padding: 0 4px; color: var(--muted); font-size: 11px; white-space: pre-line; overflow-wrap: anywhere; }
+    .drop-errors { padding: 0 4px; color: #d9534f; font-size: 11px; white-space: pre-line; overflow-wrap: anywhere; }
     .drop-errors:empty { display: none; }
     .drop-bar {
       width: 100%;
@@ -218,7 +338,6 @@
       background: var(--accent);
       transition: width .12s linear;
     }
-    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -229,9 +348,13 @@
 
   <div id="panel" class="panel" hidden>
     <div class="head">
-      <strong>Memory Log</strong>
+      <button id="openMain" class="head-main" type="button" data-i18n-title="widget.open_main" title="Открыть Memory Log">
+        <span id="headDot" class="head-dot"></span>
+        <strong>Memory Log</strong>
+      </button>
       <div class="head-actions">
-        <button id="petToggle" class="icon-btn" type="button" title="Котик на рабочем столе">🐾</button>
+        <button id="pinToggle" class="icon-btn" type="button" data-i18n-title="widget.pin" title="Закрепить панель">📌</button>
+        <button id="petToggle" class="icon-btn" type="button" data-i18n-title="widget.pet_title" title="Котик на рабочем столе">🐾</button>
         <button id="collapse" class="icon-btn" type="button" data-i18n-title="widget.collapse" title="Свернуть (Esc)">×</button>
       </div>
     </div>
@@ -249,12 +372,17 @@
         <input id="dropDeleteAfter" type="checkbox">
         <span data-i18n="widget.files.delete_after_zip">Удалять оригинал после архива</span>
       </label>
-      <div id="dropZone" class="drop-zone" data-i18n="widget.files.drop_hint">Перетащи файлы, папки или архивы</div>
+      <div id="dropZone" class="drop-zone">
+        <div id="dropHint" data-i18n="widget.files.drop_hint">Перетащи файлы, папки или архивы</div>
+        <div class="drop-pickers">
+          <button id="pickFiles" type="button" data-i18n="widget.files.pick_files">Файлы</button>
+          <button id="pickFolders" type="button" data-i18n="widget.files.pick_folders">Папки</button>
+        </div>
+      </div>
       <div id="dropBar" class="drop-bar" hidden><div id="dropFill" class="drop-fill"></div></div>
       <div id="dropResult" class="drop-result" hidden>
         <span id="dropSummary"></span>
         <button id="dropCancel" type="button" data-i18n="widget.files.cancel" hidden>Отмена</button>
-        <button id="dropReveal" type="button" data-i18n="widget.files.reveal" hidden>Папка</button>
       </div>
       <div id="dropQueue" class="drop-queue" hidden>
         <div class="drop-queue-head">
@@ -262,6 +390,10 @@
           <button id="dropQueueClear" type="button" data-i18n="widget.files.queue_clear">Очистить</button>
         </div>
         <div id="dropQueueList" class="drop-queue-list"></div>
+      </div>
+      <div id="dropOutputsHead" class="drop-queue-head" hidden>
+        <span data-i18n="widget.files.results_title">Готово</span>
+        <button id="dropOutputsClear" type="button" data-i18n="widget.files.clear_results">Очистить</button>
       </div>
       <div id="dropOutputs" class="drop-outputs" aria-live="polite"></div>
       <div id="dropErrors" class="drop-errors" role="status"></div>

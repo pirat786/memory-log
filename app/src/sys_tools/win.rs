@@ -520,6 +520,60 @@ mod win {
             }
         }
     }
+
+    pub fn pick_paths(folders: bool) -> Result<Vec<String>, String> {
+        use windows::Win32::Foundation::ERROR_CANCELLED;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::{
+            FileOpenDialog, IFileOpenDialog, FOS_ALLOWMULTISELECT, FOS_FORCEFILESYSTEM,
+            FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+        };
+
+        struct ComGuard(bool);
+        impl Drop for ComGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe { CoUninitialize(); }
+                }
+            }
+        }
+
+        let com_hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let _guard = ComGuard(com_hr.is_ok());
+
+        unsafe {
+            let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| e.to_string())?;
+            let mut opts = dialog.GetOptions().map_err(|e| e.to_string())?;
+            opts |= FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM;
+            if folders {
+                opts |= FOS_PICKFOLDERS;
+            }
+            dialog.SetOptions(opts).map_err(|e| e.to_string())?;
+
+            if let Err(e) = dialog.Show(None) {
+                if e.code() == ERROR_CANCELLED.to_hresult() {
+                    return Ok(Vec::new());
+                }
+                return Err(e.to_string());
+            }
+
+            let results = dialog.GetResults().map_err(|e| e.to_string())?;
+            let count = results.GetCount().map_err(|e| e.to_string())?;
+            let mut out = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                let item = results.GetItemAt(i).map_err(|e| e.to_string())?;
+                let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).map_err(|e| e.to_string())?;
+                let path = pwstr.to_string().map_err(|e| e.to_string());
+                CoTaskMemFree(Some(pwstr.0.cast()));
+                out.push(path?);
+            }
+            Ok(out)
+        }
+    }
 }
 
 const EN_LAYOUT: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#$^&";
@@ -567,9 +621,10 @@ mod win {
     pub fn reveal_in_explorer(_: &str) -> Result<(), String> { Err("Windows only".into()) }
     pub fn execute_power_action(_: &str) {}
     pub fn fix_selection_or_word_layout(_: &std::sync::atomic::AtomicU32) {}
+    pub fn pick_paths(_: bool) -> Result<Vec<String>, String> { Ok(Vec::new()) }
 }
 
 pub use win::{
-    execute_power_action, fix_selection_or_word_layout, listening_ports,
+    execute_power_action, fix_selection_or_word_layout, listening_ports, pick_paths,
     reveal_in_explorer, set_startup_item, startup_items,
 };

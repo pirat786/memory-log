@@ -5,13 +5,45 @@ pub mod zip_ops;
 use std::fs;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 static CANCEL_DROP: AtomicBool = AtomicBool::new(false);
+static ACTIVE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+struct ActiveDropGuard;
+
+impl ActiveDropGuard {
+    fn enter() -> Self {
+        ACTIVE_DROPS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ActiveDropGuard {
+    fn drop(&mut self) {
+        ACTIVE_DROPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub fn is_drop_active() -> bool {
+    ACTIVE_DROPS.load(Ordering::Acquire) > 0
+}
+
+pub fn cancel_and_wait_drop(timeout: Duration) {
+    if !is_drop_active() {
+        return;
+    }
+    cancel_drop();
+    crate::log::info("ожидание отмены архивации перед выходом");
+    let started = Instant::now();
+    while is_drop_active() && started.elapsed() < timeout {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
 
 pub fn cancel_drop() {
     CANCEL_DROP.store(true, Ordering::Relaxed);
@@ -249,6 +281,7 @@ pub fn handle_archive_drop(
     delete_after: bool,
     app: Option<&AppHandle>,
 ) -> Result<QuickDropResult, String> {
+    let _active_guard = ActiveDropGuard::enter();
     CANCEL_DROP.store(false, Ordering::Relaxed);
     if paths.is_empty() {
         return Err("список файлов пуст".into());

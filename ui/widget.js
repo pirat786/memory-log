@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const t = (key, params) => (window.I18N ? window.I18N.t(key, params) : key);
 
 let expanded = false;
+let pinned = localStorage.getItem("widgetPinned") === "1";
+let pickingFiles = false;
 let hoverTimer = null;
 let leaveTimer = null;
 let pollTimer = null;
@@ -11,23 +13,62 @@ let isAwake = false;
 let isPaused = false;
 let dragActive = false;
 let dropBusy = false;
-let lastDropPath = "";
 let dropStartedAt = 0;
 let dropProgress = { done: 0, total: 0, pct: 0 };
 let dropTimer = null;
 let dropQueue = [];
 let currentJob = null;
 let nextJobId = 1;
+let lastPanelHeight = 0;
+let resizeRaf = 0;
 
-function updateEdgeDot() {
-  const dot = $("dot");
-  dot.classList.toggle("paused", isPaused);
-  dot.classList.toggle("awake", !isPaused && isAwake);
+function measurePanelHeight() {
+  const panel = $("panel");
+  const head = panel?.querySelector(".head");
+  const pane = $("pane-files");
+  if (!panel || panel.hidden || !head || !pane) return 245;
+  const contentH = head.offsetHeight + pane.scrollHeight + 48;
+  return Math.max(220, Math.min(460, Math.ceil(contentH)));
+}
+
+function syncPanelHeight() {
+  if (!expanded) return;
+  cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(() => {
+    if (!expanded) return;
+    const h = measurePanelHeight();
+    if (Math.abs(h - lastPanelHeight) > 1) {
+      lastPanelHeight = h;
+      invoke("widget_resize", { expanded: true, height: h, focus: false }).catch(() => {});
+    }
+  });
+}
+
+function updateStatusIndicators() {
+  for (const id of ["dot", "headDot"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.classList.toggle("busy", dropBusy);
+    el.classList.toggle("paused", !dropBusy && isPaused);
+    el.classList.toggle("awake", !dropBusy && !isPaused && isAwake);
+  }
+  const statusKey = isPaused
+    ? "widget.status_paused"
+    : isAwake
+      ? "widget.status_awake"
+      : "widget.status_ok";
+  $("openMain").title = `${t("widget.open_main")} · ${t(statusKey)}`;
+}
+
+function updatePinButton() {
+  const btn = $("pinToggle");
+  btn.classList.toggle("active", pinned);
+  btn.title = t(pinned ? "widget.unpin" : "widget.pin");
 }
 
 function schedulePoll() {
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(refreshState, expanded ? 5000 : 30000);
+  pollTimer = setTimeout(refreshState, expanded ? 15000 : 30000);
 }
 
 async function setExpanded(next) {
@@ -37,10 +78,15 @@ async function setExpanded(next) {
   expanded = next;
   $("edgeTab").hidden = expanded;
   $("panel").hidden = !expanded;
-  await invoke("widget_resize", { expanded });
   if (expanded) {
+    const h = lastPanelHeight || 245;
+    lastPanelHeight = h;
+    await invoke("widget_resize", { expanded: true, height: h, focus: true });
+    syncPanelHeight();
     refreshState();
   } else {
+    lastPanelHeight = 0;
+    await invoke("widget_resize", { expanded: false, height: null, focus: false });
     schedulePoll();
   }
 }
@@ -53,10 +99,24 @@ $("edgeTab").addEventListener("click", () => setExpanded(true));
 
 $("panel").addEventListener("mouseenter", () => clearTimeout(leaveTimer));
 $("panel").addEventListener("mouseleave", () => {
-  if (dragActive || dropBusy) return;
+  if (
+    dragActive ||
+    dropBusy ||
+    pinned ||
+    pickingFiles ||
+    document.activeElement === $("dropZipMode")
+  ) {
+    return;
+  }
   leaveTimer = setTimeout(() => setExpanded(false), 450);
 });
 $("collapse").onclick = () => setExpanded(false);
+$("openMain").onclick = () => invoke("show_main_window");
+$("pinToggle").onclick = () => {
+  pinned = !pinned;
+  localStorage.setItem("widgetPinned", pinned ? "1" : "0");
+  updatePinButton();
+};
 
 listen("widget-toggle", () => setExpanded(!expanded));
 listen("widget-expand", () => setExpanded(true));
@@ -69,16 +129,18 @@ async function refreshState() {
     const [power, status] = await Promise.all([invoke("power_status"), invoke("status")]);
     isAwake = Boolean(power.keep_awake);
     isPaused = Boolean(status.paused);
-    updateEdgeDot();
+    updateStatusIndicators();
   } catch {}
   schedulePoll();
 }
 
 function fmtBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
-  return `${(n / 1073741824).toFixed(2)} GB`;
+  const units = t("unit.bytes").split(",");
+  const u = units.length >= 5 ? units : ["B", "KB", "MB", "GB", "TB"];
+  if (n < 1024) return `${n} ${u[0]}`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} ${u[1]}`;
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} ${u[2]}`;
+  return `${(n / 1073741824).toFixed(2)} ${u[3]}`;
 }
 
 listen("tauri://drag-enter", () => {
@@ -90,10 +152,14 @@ listen("tauri://drag-leave", () => {
   dragActive = false;
   $("dropZone").classList.remove("over");
 });
+
 function fmtElapsed(ms) {
-  if (ms < 1000) return `${ms} ms`;
+  if (ms < 1000) {
+    const msUnit = window.I18N?.code === "ru" ? "мс" : "ms";
+    return `${ms} ${msUnit}`;
+  }
   const secs = ms / 1000;
-  if (secs < 60) return `${secs.toFixed(1)} s`;
+  if (secs < 60) return `${secs.toFixed(1)} ${t("unit.sec")}`;
   const m = Math.floor(secs / 60);
   const s = String(Math.floor(secs % 60)).padStart(2, "0");
   return `${m}:${s}`;
@@ -113,12 +179,8 @@ function resetDropMetrics(now) {
 
 function fmtSpeedMbps(mbps) {
   if (!Number.isFinite(mbps) || mbps <= 0) return "";
-  return mbps >= 100 ? `${Math.round(mbps)} MB/s` : `${mbps.toFixed(1)} MB/s`;
-}
-
-function fmtSpeed(bytes, ms) {
-  if (ms < 300 || bytes <= 0) return "";
-  return fmtSpeedMbps((bytes / 1048576) / (ms / 1000));
+  const unit = `${t("unit.mb")}/${t("unit.sec")}`;
+  return mbps >= 100 ? `${Math.round(mbps)} ${unit}` : `${mbps.toFixed(1)} ${unit}`;
 }
 
 function fmtEta(ms) {
@@ -126,7 +188,7 @@ function fmtEta(ms) {
   if (secs >= 15) {
     secs = Math.max(15, Math.round(secs / 5) * 5);
   }
-  if (secs < 60) return `~${secs} s`;
+  if (secs < 60) return `~${secs} ${t("unit.sec")}`;
   const m = Math.floor(secs / 60);
   const s = String(secs % 60).padStart(2, "0");
   return `~${m}:${s}`;
@@ -161,11 +223,11 @@ function renderDropProgress() {
     if (spd) parts.push(spd);
     if (eta) parts.push(eta);
     parts.push(`${fmtBytes(done)}/${fmtBytes(total)}`);
-    const text = parts.join(" • ");
-    $("dropSummary").textContent = currentJob ? `${currentJob.label} • ${text}` : text;
+    const text = parts.join(" · ");
+    $("dropSummary").textContent = currentJob ? `${currentJob.label} · ${text}` : text;
   } else {
     const text = `${t("widget.files.processing")} ${elapsed}`;
-    $("dropSummary").textContent = currentJob ? `${currentJob.label} • ${text}` : text;
+    $("dropSummary").textContent = currentJob ? `${currentJob.label} · ${text}` : text;
   }
 }
 
@@ -183,9 +245,11 @@ restoreSelect("dropZipMode", "widgetZipMode", "fast");
 $("dropZipMode").onchange = () => {
   localStorage.setItem("widgetZipMode", $("dropZipMode").value);
 };
-$("dropDeleteAfter").checked = localStorage.getItem("widgetDeleteAfter") === "1";
+
+// Не запоминаем удаление оригиналов между сессиями, чтобы не удалить файлы случайно.
+$("dropDeleteAfter").checked = false;
 $("dropDeleteAfter").onchange = () => {
-  localStorage.setItem("widgetDeleteAfter", $("dropDeleteAfter").checked ? "1" : "0");
+  $("dropZone").classList.toggle("danger-mode", $("dropDeleteAfter").checked);
 };
 
 listen("quick-drop-progress", (e) => {
@@ -220,28 +284,53 @@ function formatJobLabel(paths) {
   return paths.length > 1 ? `${first} +${paths.length - 1}` : first;
 }
 
-function formatDropReport(rep) {
+function updateOutputsHeader() {
+  const hasAny = $("dropOutputs").childElementCount > 0 || $("dropErrors").textContent.length > 0;
+  $("dropOutputsHead").hidden = !hasAny;
+}
+
+function makeBadge(text, cls = "") {
+  const b = document.createElement("span");
+  b.className = cls ? `drop-res-badge ${cls}` : "drop-res-badge";
+  b.textContent = text;
+  return b;
+}
+
+function appendDropReportRow(rep) {
   const saved = rep.input_bytes - rep.output_bytes;
   const pct = rep.input_bytes > 0 ? Math.round((saved / rep.input_bytes) * 100) : 0;
   const kind = {
     "zip-unpack": "result_unpacked",
     "zip-pack": "result_packed",
   }[rep.kind];
-  const name = pathBaseName(rep.output_path);
-  const head = name ? `${name} • ${t(`widget.files.${kind}`)}` : t(`widget.files.${kind}`);
-  const size = `${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)}`;
-  const savings = rep.kind !== "zip-unpack" && pct !== 0 ? ` (${pct > 0 ? "−" : "+"}${Math.abs(pct)}%)` : "";
-  const deleted = rep.deleted_original ? ` • ${t("widget.files.deleted_original")}` : "";
-  return `${head} · ${rep.count} · ${size}${savings} • ${fmtElapsed(rep.elapsed_ms)}${deleted}`;
-}
 
-function appendDropReportRow(rep) {
   const row = document.createElement("div");
   row.className = "drop-result";
-  const label = document.createElement("span");
-  label.textContent = formatDropReport(rep);
-  label.title = rep.output_path;
-  row.append(label);
+  row.title = rep.output_path;
+
+  const body = document.createElement("div");
+  body.className = "drop-res-body";
+
+  const top = document.createElement("div");
+  top.className = "drop-res-top";
+  const nameEl = document.createElement("span");
+  nameEl.className = "drop-res-name";
+  nameEl.textContent = pathBaseName(rep.output_path) || t(`widget.files.${kind}`);
+  top.append(nameEl, makeBadge(t(`widget.files.${kind}`)));
+  if (rep.kind !== "zip-unpack" && pct !== 0) {
+    top.append(makeBadge(`${pct > 0 ? "−" : "+"}${Math.abs(pct)}%`, pct > 0 ? "good" : ""));
+  }
+  if (rep.deleted_original) {
+    top.append(makeBadge(t("widget.files.deleted_original"), "warn"));
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "drop-res-meta";
+  meta.textContent = `${t("widget.files.items_count", { n: rep.count })} · ${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)} · ${fmtElapsed(rep.elapsed_ms)}`;
+
+  body.append(top, meta);
+  row.append(body);
+
   if (rep.output_path) {
     const button = document.createElement("button");
     button.type = "button";
@@ -250,6 +339,8 @@ function appendDropReportRow(rep) {
     row.append(button);
   }
   $("dropOutputs").append(row);
+  updateOutputsHeader();
+  syncPanelHeight();
 }
 
 function appendDropErrors(errors) {
@@ -257,6 +348,8 @@ function appendDropErrors(errors) {
   const lines = errors.map((error) => (error === "отменено" ? t("widget.files.cancelled") : error));
   const prev = $("dropErrors").textContent;
   $("dropErrors").textContent = prev ? `${prev}\n${lines.join("\n")}` : lines.join("\n");
+  updateOutputsHeader();
+  syncPanelHeight();
 }
 
 function renderDropQueue() {
@@ -264,6 +357,7 @@ function renderDropQueue() {
   list.replaceChildren();
   if (!dropQueue.length) {
     $("dropQueue").hidden = true;
+    syncPanelHeight();
     return;
   }
   $("dropQueueTitle").textContent = t("widget.files.queue_title", { n: dropQueue.length });
@@ -284,11 +378,13 @@ function renderDropQueue() {
     list.append(row);
   }
   $("dropQueue").hidden = false;
+  syncPanelHeight();
 }
 
 async function processDropQueue() {
   if (dropBusy) return;
   dropBusy = true;
+  updateStatusIndicators();
   try {
     while (dropQueue.length > 0) {
       currentJob = dropQueue.shift();
@@ -298,15 +394,15 @@ async function processDropQueue() {
       resetDropMetrics(dropStartedAt);
       clearInterval(dropTimer);
       dropTimer = setInterval(renderDropProgress, 250);
-      $("dropZone").textContent = t("widget.files.drop_more");
+      $("dropHint").textContent = t("widget.files.drop_more");
       $("dropFill").style.width = "0%";
       $("dropBar").hidden = false;
       renderDropProgress();
-      $("dropReveal").hidden = true;
       $("dropCancel").disabled = false;
       $("dropCancel").textContent = t("widget.files.cancel");
       $("dropCancel").hidden = false;
       $("dropResult").hidden = false;
+      syncPanelHeight();
       try {
         const result = await invoke("quick_drop", {
           paths: currentJob.paths,
@@ -328,28 +424,23 @@ async function processDropQueue() {
   } finally {
     currentJob = null;
     dropBusy = false;
+    updateStatusIndicators();
     clearInterval(dropTimer);
     $("dropBar").hidden = true;
     $("dropCancel").hidden = true;
     $("dropResult").hidden = true;
-    $("dropZone").textContent = t("widget.files.drop_hint");
+    $("dropHint").textContent = t("widget.files.drop_hint");
     renderDropQueue();
+    syncPanelHeight();
   }
 }
 
-$("dropQueueClear").onclick = () => {
-  dropQueue = [];
-  renderDropQueue();
-};
-
-listen("tauri://drag-drop", (e) => {
-  dragActive = false;
-  $("dropZone").classList.remove("over");
-  const paths = e?.payload?.paths;
+function enqueuePaths(paths) {
   if (!Array.isArray(paths) || !paths.length) return;
   if (!dropBusy && dropQueue.length === 0) {
     $("dropOutputs").replaceChildren();
     $("dropErrors").textContent = "";
+    updateOutputsHeader();
   }
   dropQueue.push({
     id: nextJobId++,
@@ -362,20 +453,64 @@ listen("tauri://drag-drop", (e) => {
   if (!dropBusy) {
     processDropQueue();
   }
+}
+
+async function pickAndEnqueue(folders) {
+  if (pickingFiles) return;
+  pickingFiles = true;
+  try {
+    const paths = await invoke("pick_quick_paths", { folders });
+    enqueuePaths(paths);
+  } catch (err) {
+    appendDropErrors([String(err)]);
+  } finally {
+    pickingFiles = false;
+  }
+}
+
+$("dropQueueClear").onclick = () => {
+  dropQueue = [];
+  renderDropQueue();
+};
+
+$("dropOutputsClear").onclick = () => {
+  $("dropOutputs").replaceChildren();
+  $("dropErrors").textContent = "";
+  updateOutputsHeader();
+  syncPanelHeight();
+};
+
+$("pickFiles").onclick = (e) => {
+  e.stopPropagation();
+  pickAndEnqueue(false);
+};
+$("pickFolders").onclick = (e) => {
+  e.stopPropagation();
+  pickAndEnqueue(true);
+};
+$("dropZone").onclick = (e) => {
+  if (e.target.closest("button")) return;
+  pickAndEnqueue(false);
+};
+
+listen("tauri://drag-drop", (e) => {
+  dragActive = false;
+  $("dropZone").classList.remove("over");
+  enqueuePaths(e?.payload?.paths);
 });
+
 $("dropCancel").onclick = async () => {
   if (!dropBusy) return;
   $("dropCancel").disabled = true;
   $("dropCancel").textContent = t("widget.files.cancelling");
   await invoke("quick_drop_cancel");
 };
-$("dropReveal").onclick = () => {
-  if (lastDropPath) invoke("reveal_path", { path: lastDropPath });
-};
 
 (async () => {
   try { await window.I18N?.init(); } catch {}
-  $("dropZone").textContent = t("widget.files.drop_hint");
+  $("dropHint").textContent = t("widget.files.drop_hint");
+  updatePinButton();
+  updateStatusIndicators();
   refreshState();
   try {
     const open = await invoke("pet_open");

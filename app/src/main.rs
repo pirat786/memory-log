@@ -214,6 +214,8 @@ fn main() {
             commands::toggle_widget,
             commands::widget_open,
             commands::widget_resize,
+            commands::show_main_window,
+            commands::pick_quick_paths,
             commands::toggle_pet,
             commands::pet_open,
             commands::pet_bounds,
