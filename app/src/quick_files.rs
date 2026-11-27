@@ -246,6 +246,7 @@ fn unpack_one(path: String, kind: &str, app: Option<&AppHandle>) -> Result<Quick
 pub fn handle_archive_drop(
     paths: Vec<String>,
     zip_mode: &str,
+    delete_after: bool,
     app: Option<&AppHandle>,
 ) -> Result<QuickDropResult, String> {
     CANCEL_DROP.store(false, Ordering::Relaxed);
@@ -277,12 +278,83 @@ pub fn handle_archive_drop(
         result.record(unpack_one(archive, kind, app));
     }
     if !to_pack.is_empty() && !is_cancelled() {
-        result.record(pack_archive(to_pack, zip_mode, app));
+        let orig_paths = delete_after.then(|| to_pack.clone());
+        match pack_archive(to_pack, zip_mode, app) {
+            Ok(mut rep) => {
+                if let Some(orig) = orig_paths {
+                    if rep.kind == "zip-pack"
+                        && rep.output_bytes > 0
+                        && Path::new(&rep.output_path).is_file()
+                        && !is_cancelled()
+                    {
+                        match delete_originals(&orig, Path::new(&rep.output_path)) {
+                            Ok(()) => {
+                                rep.deleted_original = true;
+                                crate::log::info(&format!(
+                                    "zip-pack deleted original: {}",
+                                    rep.output_path
+                                ));
+                            }
+                            Err(err) => result.errors.push(err),
+                        }
+                    }
+                }
+                result.record(Ok(rep));
+            }
+            Err(err) => result.record(Err(err)),
+        }
     }
     if is_cancelled() {
         result.errors.push("отменено".into());
     }
     Ok(result)
+}
+
+fn is_unsafe_delete_target(p: &Path) -> bool {
+    let norm = fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if norm.parent().is_none() {
+        return true;
+    }
+    let s = norm.to_string_lossy().to_ascii_lowercase();
+    let trimmed = s.trim_start_matches(r"\\?\").trim_end_matches('\\');
+    if trimmed.len() <= 3 {
+        return true;
+    }
+    for env_key in ["USERPROFILE", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(val) = std::env::var_os(env_key) {
+            let env_norm = val.to_string_lossy().to_ascii_lowercase();
+            if trimmed == env_norm.trim_end_matches('\\') {
+                return true;
+            }
+        }
+    }
+    matches!(trimmed, r"c:\users" | r"c:\windows")
+}
+
+fn delete_originals(paths: &[String], output_path: &Path) -> Result<(), String> {
+    let out_canon = fs::canonicalize(output_path).ok();
+    for raw in paths {
+        let p = Path::new(raw);
+        if !p.exists() {
+            continue;
+        }
+        if is_unsafe_delete_target(p) {
+            return Err(format!("защищённый путь: {}", p.display()));
+        }
+        if let (Some(out), Ok(src)) = (&out_canon, fs::canonicalize(p)) {
+            if &src == out {
+                continue;
+            }
+        }
+        if p.is_dir() {
+            fs::remove_dir_all(p)
+                .map_err(|e| format!("не удалось удалить {}: {e}", p.display()))?;
+        } else {
+            fs::remove_file(p)
+                .map_err(|e| format!("не удалось удалить {}: {e}", p.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn pack_archive(paths: Vec<String>, zip_mode: &str, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {

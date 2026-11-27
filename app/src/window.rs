@@ -28,7 +28,7 @@ pub fn show_main(app: &AppHandle) {
 const COLLAPSED_W: f64 = 16.0;
 const COLLAPSED_H: f64 = 68.0;
 const EXPANDED_W: f64 = 320.0;
-const EXPANDED_H: f64 = 280.0;
+const EXPANDED_H: f64 = 340.0;
 
 fn dock_right_edge(w: &WebviewWindow, width: f64, height: f64) {
     let Ok(Some(monitor)) = w.current_monitor().or_else(|_| w.primary_monitor()) else { return };

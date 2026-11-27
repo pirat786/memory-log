@@ -312,6 +312,7 @@ mod quick_files {
                 .map(|p| p.to_string_lossy().into_owned())
                 .to_vec(),
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -366,7 +367,7 @@ mod quick_files {
         assert!(packed.output_path.ends_with(".tar.zst"));
         assert_eq!(packed.count, 3);
 
-        let unpacked_res = handle_archive_drop(vec![packed.output_path.clone()], "ultra", None).unwrap();
+        let unpacked_res = handle_archive_drop(vec![packed.output_path.clone()], "ultra", false, None).unwrap();
         assert!(unpacked_res.errors.is_empty(), "{:?}", unpacked_res.errors);
         assert_eq!(unpacked_res.reports.len(), 1);
         let unpacked = &unpacked_res.reports[0];
@@ -443,7 +444,7 @@ mod quick_files {
         crate::quick_files::cancel_drop();
         let res = t.join().expect("pack_zip thread panicked");
         // Reset flag for subsequent tests
-        crate::quick_files::handle_archive_drop(vec![], "fast", None).ok();
+        crate::quick_files::handle_archive_drop(vec![], "fast", false, None).ok();
         match res {
             Err(e) => assert!(e.contains("отменено"), "unexpected err: {e}"),
             Ok(rep) => {
@@ -471,7 +472,7 @@ mod quick_files {
         crate::quick_files::cancel_drop();
         let res = t.join().expect("pack_solid_ultra thread panicked");
         let elapsed = started.elapsed();
-        crate::quick_files::handle_archive_drop(vec![], "fast", None).ok();
+        crate::quick_files::handle_archive_drop(vec![], "fast", false, None).ok();
         assert!(elapsed.as_secs_f64() < 2.0, "cancel took too long: {elapsed:?}");
         if let Ok(rep) = res {
             let _ = fs::remove_file(&rep.output_path);
@@ -487,7 +488,7 @@ mod quick_files {
         fs::write(src.join("a.bin"), vec![1u8; 4096]).unwrap();
         fs::write(src.join("b.txt"), b"hello archive").unwrap();
 
-        let res = handle_archive_drop(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        let res = handle_archive_drop(vec![src.to_string_lossy().into_owned()], "fast", false, None).unwrap();
         assert!(res.errors.is_empty());
         assert_eq!(res.reports.len(), 1);
         let rep = &res.reports[0];
@@ -495,6 +496,44 @@ mod quick_files {
         assert!(!rep.deleted_original);
         assert!(src.exists());
         assert!(Path::new(&rep.output_path).is_file());
+    }
+
+    #[test]
+    fn handle_archive_drop_deletes_originals_when_enabled() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("to_archive_and_delete");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.bin"), vec![1u8; 4096]).unwrap();
+        fs::write(src.join("b.txt"), b"hello archive").unwrap();
+
+        let res = handle_archive_drop(vec![src.to_string_lossy().into_owned()], "fast", true, None).unwrap();
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert_eq!(res.reports.len(), 1);
+        let rep = &res.reports[0];
+        assert_eq!(rep.kind, "zip-pack");
+        assert!(rep.deleted_original);
+        assert!(!src.exists());
+        assert!(Path::new(&rep.output_path).is_file());
+    }
+
+    #[test]
+    fn handle_archive_drop_delete_after_keeps_unpacked_archive() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let arch = dir.path().join("keep_me.zip");
+        let mut zip = ZipWriter::new(File::create(&arch).unwrap());
+        zip.start_file("inside.txt", SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"archive content").unwrap();
+        zip.finish().unwrap();
+
+        let res = handle_archive_drop(vec![arch.to_string_lossy().into_owned()], "fast", true, None).unwrap();
+        assert!(res.errors.is_empty(), "{:?}", res.errors);
+        assert_eq!(res.reports.len(), 1);
+        let rep = &res.reports[0];
+        assert_eq!(rep.kind, "zip-unpack");
+        assert!(!rep.deleted_original);
+        assert!(arch.is_file());
     }
 
     #[test]
@@ -586,14 +625,14 @@ mod quick_files {
 
         let fast_rep = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
         let solid_res =
-            handle_archive_drop(vec![src.to_string_lossy().into_owned()], "solid", None).unwrap();
+            handle_archive_drop(vec![src.to_string_lossy().into_owned()], "solid", false, None).unwrap();
         assert!(solid_res.errors.is_empty());
         let solid_rep = solid_res.reports.into_iter().next().unwrap();
         assert!(solid_rep.output_path.ends_with(".tar.zst"));
         assert_eq!(solid_rep.count, 20);
         assert!(solid_rep.output_bytes < fast_rep.output_bytes / 4);
 
-        let unpacked_res = handle_archive_drop(vec![solid_rep.output_path], "fast", None).unwrap();
+        let unpacked_res = handle_archive_drop(vec![solid_rep.output_path], "fast", false, None).unwrap();
         assert!(unpacked_res.errors.is_empty());
         let unpacked = unpacked_res.reports.into_iter().next().unwrap();
         assert_eq!(unpacked.kind, "zip-unpack");
@@ -692,6 +731,7 @@ mod quick_files {
         let rep_tgz = handle_archive_drop(
             vec![tgz_path.to_string_lossy().into_owned()],
             "fast",
+            false,
             None,
         )
         .unwrap()
@@ -715,6 +755,7 @@ mod quick_files {
         let rep_gz = handle_archive_drop(
             vec![gz_path.to_string_lossy().into_owned()],
             "fast",
+            false,
             None,
         )
         .unwrap()
@@ -771,6 +812,7 @@ mod quick_files {
                 tgz_path.to_string_lossy().into_owned(),
             ],
             "fast",
+            false,
             None,
         )
         .unwrap();
@@ -806,6 +848,7 @@ mod quick_files {
         let result = handle_archive_drop(
             [zip_path, tar_path, document].map(|path| path.to_string_lossy().into_owned()).to_vec(),
             "fast",
+            false,
             None,
         ).unwrap();
         assert!(result.errors.is_empty(), "{:?}", result.errors);
@@ -917,6 +960,7 @@ mod quick_files {
         let rep = handle_archive_drop(
             vec![src.to_string_lossy().into_owned()],
             "ultra",
+            false,
             None,
         )
         .unwrap()
@@ -929,6 +973,7 @@ mod quick_files {
         let unp = handle_archive_drop(
             vec![rep.output_path],
             "fast",
+            false,
             None,
         )
         .unwrap()

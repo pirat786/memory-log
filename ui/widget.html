@@ -139,6 +139,68 @@
       flex-shrink: 0;
     }
     .drop-result button:hover { border-color: var(--accent); }
+    .drop-opt {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .drop-opt input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+    .drop-opt:has(input:checked) { color: #d9534f; }
+    .drop-queue { display: grid; gap: 4px; }
+    .drop-queue-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 0 2px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .drop-queue-head button {
+      padding: 2px 7px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      font: 600 10.5px/1.2 inherit;
+      cursor: pointer;
+    }
+    .drop-queue-head button:hover { border-color: var(--accent); color: var(--text); }
+    .drop-queue-list { display: grid; gap: 4px; }
+    .drop-queue-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: var(--surface);
+      font-size: 11px;
+      min-width: 0;
+    }
+    .drop-queue-item span {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+    .drop-queue-item button {
+      padding: 1px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--muted);
+      font: 600 11px/1.1 inherit;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .drop-queue-item button:hover { border-color: var(--accent); color: var(--text); }
     .drop-outputs { display: grid; gap: 6px; }
     .drop-outputs:empty { display: none; }
     .drop-errors { padding: 0 4px; color: var(--muted); font-size: 11px; white-space: pre-line; overflow-wrap: anywhere; }
@@ -183,12 +245,23 @@
           <option value="ultra" data-i18n="widget.files.zip_ultra">Очень сильное (.tar.zst)</option>
         </select>
       </div>
+      <label id="dropDeleteAfterRow" class="drop-opt">
+        <input id="dropDeleteAfter" type="checkbox">
+        <span data-i18n="widget.files.delete_after_zip">Удалять оригинал после архива</span>
+      </label>
       <div id="dropZone" class="drop-zone" data-i18n="widget.files.drop_hint">Перетащи файлы, папки или архивы</div>
       <div id="dropBar" class="drop-bar" hidden><div id="dropFill" class="drop-fill"></div></div>
       <div id="dropResult" class="drop-result" hidden>
         <span id="dropSummary"></span>
         <button id="dropCancel" type="button" data-i18n="widget.files.cancel" hidden>Отмена</button>
         <button id="dropReveal" type="button" data-i18n="widget.files.reveal" hidden>Папка</button>
+      </div>
+      <div id="dropQueue" class="drop-queue" hidden>
+        <div class="drop-queue-head">
+          <span id="dropQueueTitle"></span>
+          <button id="dropQueueClear" type="button" data-i18n="widget.files.queue_clear">Очистить</button>
+        </div>
+        <div id="dropQueueList" class="drop-queue-list"></div>
       </div>
       <div id="dropOutputs" class="drop-outputs" aria-live="polite"></div>
       <div id="dropErrors" class="drop-errors" role="status"></div>

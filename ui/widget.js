@@ -15,6 +15,9 @@ let lastDropPath = "";
 let dropStartedAt = 0;
 let dropProgress = { done: 0, total: 0, pct: 0 };
 let dropTimer = null;
+let dropQueue = [];
+let currentJob = null;
+let nextJobId = 1;
 
 function updateEdgeDot() {
   const dot = $("dot");
@@ -158,9 +161,11 @@ function renderDropProgress() {
     if (spd) parts.push(spd);
     if (eta) parts.push(eta);
     parts.push(`${fmtBytes(done)}/${fmtBytes(total)}`);
-    $("dropSummary").textContent = parts.join(" • ");
+    const text = parts.join(" • ");
+    $("dropSummary").textContent = currentJob ? `${currentJob.label} • ${text}` : text;
   } else {
-    $("dropSummary").textContent = `${t("widget.files.processing")} ${elapsed}`;
+    const text = `${t("widget.files.processing")} ${elapsed}`;
+    $("dropSummary").textContent = currentJob ? `${currentJob.label} • ${text}` : text;
   }
 }
 
@@ -177,6 +182,10 @@ function restoreSelect(id, key, fallback) {
 restoreSelect("dropZipMode", "widgetZipMode", "fast");
 $("dropZipMode").onchange = () => {
   localStorage.setItem("widgetZipMode", $("dropZipMode").value);
+};
+$("dropDeleteAfter").checked = localStorage.getItem("widgetDeleteAfter") === "1";
+$("dropDeleteAfter").onchange = () => {
+  localStorage.setItem("widgetDeleteAfter", $("dropDeleteAfter").checked ? "1" : "0");
 };
 
 listen("quick-drop-progress", (e) => {
@@ -200,6 +209,17 @@ listen("quick-drop-progress", (e) => {
   renderDropProgress();
 });
 
+function pathBaseName(p) {
+  if (!p) return "";
+  const parts = String(p).replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
+function formatJobLabel(paths) {
+  const first = pathBaseName(paths[0]);
+  return paths.length > 1 ? `${first} +${paths.length - 1}` : first;
+}
+
 function formatDropReport(rep) {
   const saved = rep.input_bytes - rep.output_bytes;
   const pct = rep.input_bytes > 0 ? Math.round((saved / rep.input_bytes) * 100) : 0;
@@ -207,80 +227,140 @@ function formatDropReport(rep) {
     "zip-unpack": "result_unpacked",
     "zip-pack": "result_packed",
   }[rep.kind];
+  const name = pathBaseName(rep.output_path);
+  const head = name ? `${name} • ${t(`widget.files.${kind}`)}` : t(`widget.files.${kind}`);
   const size = `${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)}`;
   const savings = rep.kind !== "zip-unpack" && pct !== 0 ? ` (${pct > 0 ? "−" : "+"}${Math.abs(pct)}%)` : "";
-  return `${t(`widget.files.${kind}`)} · ${rep.count} · ${size}${savings} • ${fmtElapsed(rep.elapsed_ms)}`;
+  const deleted = rep.deleted_original ? ` • ${t("widget.files.deleted_original")}` : "";
+  return `${head} · ${rep.count} · ${size}${savings} • ${fmtElapsed(rep.elapsed_ms)}${deleted}`;
 }
 
-function showDropReports(reports) {
-  if (reports.length === 1) {
-    const [rep] = reports;
-    $("dropSummary").textContent = formatDropReport(rep);
-    lastDropPath = rep.output_path;
-    $("dropReveal").hidden = !lastDropPath;
+function appendDropReportRow(rep) {
+  const row = document.createElement("div");
+  row.className = "drop-result";
+  const label = document.createElement("span");
+  label.textContent = formatDropReport(rep);
+  label.title = rep.output_path;
+  row.append(label);
+  if (rep.output_path) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = t("widget.files.reveal");
+    button.onclick = () => invoke("reveal_path", { path: rep.output_path });
+    row.append(button);
+  }
+  $("dropOutputs").append(row);
+}
+
+function appendDropErrors(errors) {
+  if (!errors.length) return;
+  const lines = errors.map((error) => (error === "отменено" ? t("widget.files.cancelled") : error));
+  const prev = $("dropErrors").textContent;
+  $("dropErrors").textContent = prev ? `${prev}\n${lines.join("\n")}` : lines.join("\n");
+}
+
+function renderDropQueue() {
+  const list = $("dropQueueList");
+  list.replaceChildren();
+  if (!dropQueue.length) {
+    $("dropQueue").hidden = true;
     return;
   }
-
-  $("dropResult").hidden = true;
-  for (const rep of reports) {
+  $("dropQueueTitle").textContent = t("widget.files.queue_title", { n: dropQueue.length });
+  for (const job of dropQueue) {
     const row = document.createElement("div");
-    row.className = "drop-result";
+    row.className = "drop-queue-item";
     const label = document.createElement("span");
-    label.textContent = formatDropReport(rep);
-    label.title = rep.output_path;
-    row.append(label);
-    if (rep.output_path) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = $("dropReveal").textContent;
-      button.onclick = () => invoke("reveal_path", { path: rep.output_path });
-      row.append(button);
-    }
-    $("dropOutputs").append(row);
+    label.textContent = job.label;
+    label.title = job.paths.join("\n");
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.onclick = () => {
+      dropQueue = dropQueue.filter((item) => item.id !== job.id);
+      renderDropQueue();
+    };
+    row.append(label, rm);
+    list.append(row);
   }
+  $("dropQueue").hidden = false;
 }
 
-listen("tauri://drag-drop", async (e) => {
-  dragActive = false;
-  $("dropZone").classList.remove("over");
-  const paths = e?.payload?.paths;
-  if (!Array.isArray(paths) || !paths.length || dropBusy) return;
-  $("dropOutputs").replaceChildren();
-  $("dropErrors").textContent = "";
+async function processDropQueue() {
+  if (dropBusy) return;
   dropBusy = true;
-  dropStartedAt = Date.now();
-  dropProgress = { done: 0, total: 0, pct: 0 };
-  resetDropMetrics(dropStartedAt);
-  clearInterval(dropTimer);
-  dropTimer = setInterval(renderDropProgress, 250);
-  $("dropZone").textContent = t("widget.files.processing");
-  $("dropFill").style.width = "0%";
-  $("dropBar").hidden = false;
-  renderDropProgress();
-  $("dropReveal").hidden = true;
-  $("dropCancel").disabled = false;
-  $("dropCancel").textContent = t("widget.files.cancel");
-  $("dropCancel").hidden = false;
-  $("dropResult").hidden = false;
   try {
-    const result = await invoke("quick_drop", {
-      paths,
-      zipMode: $("dropZipMode").value,
-    });
-    showDropReports(result.reports);
-    $("dropErrors").textContent = result.errors.map((error) => error === "отменено" ? t("widget.files.cancelled") : error).join("\n");
-  } catch (err) {
-    const msg = String(err);
-    $("dropSummary").textContent = msg.includes("отменено")
-      ? `${t("widget.files.cancelled")} (${fmtElapsed(Date.now() - dropStartedAt)})`
-      : msg;
-    $("dropReveal").hidden = true;
+    while (dropQueue.length > 0) {
+      currentJob = dropQueue.shift();
+      renderDropQueue();
+      dropStartedAt = Date.now();
+      dropProgress = { done: 0, total: 0, pct: 0 };
+      resetDropMetrics(dropStartedAt);
+      clearInterval(dropTimer);
+      dropTimer = setInterval(renderDropProgress, 250);
+      $("dropZone").textContent = t("widget.files.drop_more");
+      $("dropFill").style.width = "0%";
+      $("dropBar").hidden = false;
+      renderDropProgress();
+      $("dropReveal").hidden = true;
+      $("dropCancel").disabled = false;
+      $("dropCancel").textContent = t("widget.files.cancel");
+      $("dropCancel").hidden = false;
+      $("dropResult").hidden = false;
+      try {
+        const result = await invoke("quick_drop", {
+          paths: currentJob.paths,
+          zipMode: currentJob.zipMode,
+          deleteAfter: currentJob.deleteAfter,
+        });
+        for (const rep of result.reports) {
+          appendDropReportRow(rep);
+        }
+        appendDropErrors(result.errors);
+      } catch (err) {
+        const msg = String(err);
+        const text = msg.includes("отменено")
+          ? `${currentJob.label}: ${t("widget.files.cancelled")} (${fmtElapsed(Date.now() - dropStartedAt)})`
+          : `${currentJob.label}: ${msg}`;
+        appendDropErrors([text]);
+      }
+    }
   } finally {
+    currentJob = null;
     dropBusy = false;
     clearInterval(dropTimer);
     $("dropBar").hidden = true;
     $("dropCancel").hidden = true;
+    $("dropResult").hidden = true;
     $("dropZone").textContent = t("widget.files.drop_hint");
+    renderDropQueue();
+  }
+}
+
+$("dropQueueClear").onclick = () => {
+  dropQueue = [];
+  renderDropQueue();
+};
+
+listen("tauri://drag-drop", (e) => {
+  dragActive = false;
+  $("dropZone").classList.remove("over");
+  const paths = e?.payload?.paths;
+  if (!Array.isArray(paths) || !paths.length) return;
+  if (!dropBusy && dropQueue.length === 0) {
+    $("dropOutputs").replaceChildren();
+    $("dropErrors").textContent = "";
+  }
+  dropQueue.push({
+    id: nextJobId++,
+    paths,
+    zipMode: $("dropZipMode").value,
+    deleteAfter: $("dropDeleteAfter").checked,
+    label: formatJobLabel(paths),
+  });
+  renderDropQueue();
+  if (!dropBusy) {
+    processDropQueue();
   }
 });
 $("dropCancel").onclick = async () => {

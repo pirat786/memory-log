@@ -396,11 +396,13 @@ pub async fn quick_drop(
     app: AppHandle,
     paths: Vec<String>,
     zip_mode: Option<String>,
+    delete_after: Option<bool>,
 ) -> Result<crate::quick_files::QuickDropResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         crate::quick_files::handle_archive_drop(
             paths,
             zip_mode.as_deref().unwrap_or("fast"),
+            delete_after.unwrap_or(false),
             Some(&app),
         )
     })
