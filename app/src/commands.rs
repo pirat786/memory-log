@@ -361,7 +361,7 @@ pub fn widget_resize(app: AppHandle, expanded: bool, height: Option<f64>, focus:
 }
 
 #[tauri::command]
-pub fn show_main_window(app: AppHandle) {
+pub async fn show_main_window(app: AppHandle) {
     crate::window::show_main(&app);
 }
 
