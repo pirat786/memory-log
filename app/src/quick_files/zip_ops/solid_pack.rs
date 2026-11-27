@@ -707,8 +707,8 @@ fn pack_solid_internal(
                 continue;
             }
             if !hdd_mode && group.len() >= 16 {
-                let (tx, rx) = mpsc::sync_channel::<Result<SolidBatch, String>>(2);
                 let scope_res = std::thread::scope(|s| -> Result<(), String> {
+                    let (tx, rx) = mpsc::sync_channel::<Result<SolidBatch, String>>(2);
                     s.spawn(move || {
                         let mut small_buf = Vec::new();
                         let mut small_bytes = 0u64;
@@ -756,49 +756,53 @@ fn pack_solid_internal(
                         let _ = flush_small(&mut small_buf, &mut small_bytes);
                     });
 
-                    while let Ok(item) = rx.recv() {
-                        match item? {
-                            SolidBatch::Loaded(items) => {
-                                for (zip_name, meta, data) in items {
-                                    if is_cancelled() {
-                                        return Err("отменено".into());
+                    let consume_res: Result<(), String> = (|| {
+                        while let Ok(item) = rx.recv() {
+                            match item? {
+                                SolidBatch::Loaded(items) => {
+                                    for (zip_name, meta, data) in items {
+                                        if is_cancelled() {
+                                            return Err("отменено".into());
+                                        }
+                                        let mut header = tar::Header::new_gnu();
+                                        header.set_metadata(&meta);
+                                        header.set_size(data.len() as u64);
+                                        header.set_cksum();
+                                        builder
+                                            .append_data(&mut header, &zip_name, &data[..])
+                                            .map_err(|e| format!("ошибка упаковки {zip_name}: {e}"))?;
+                                        total_in += data.len() as u64;
+                                        count += 1;
+                                        progress.add(data.len() as u64);
+                                        maybe_log_solid_pack(
+                                            total_in,
+                                            total_expected,
+                                            started,
+                                            &mut last_log,
+                                            &mut last_log_bytes,
+                                        );
                                     }
-                                    let mut header = tar::Header::new_gnu();
-                                    header.set_metadata(&meta);
-                                    header.set_size(data.len() as u64);
-                                    header.set_cksum();
-                                    builder
-                                        .append_data(&mut header, &zip_name, &data[..])
-                                        .map_err(|e| format!("ошибка упаковки {zip_name}: {e}"))?;
-                                    total_in += data.len() as u64;
-                                    count += 1;
-                                    progress.add(data.len() as u64);
-                                    maybe_log_solid_pack(
-                                        total_in,
-                                        total_expected,
-                                        started,
+                                }
+                                SolidBatch::Stream(task) => {
+                                    append_solid_task_stream(
+                                        &mut builder,
+                                        &task,
+                                        read_buf_size,
+                                        &mut progress,
+                                        &mut total_in,
+                                        &mut count,
                                         &mut last_log,
                                         &mut last_log_bytes,
-                                    );
+                                        started,
+                                        total_expected,
+                                    )?;
                                 }
                             }
-                            SolidBatch::Stream(task) => {
-                                append_solid_task_stream(
-                                    &mut builder,
-                                    &task,
-                                    read_buf_size,
-                                    &mut progress,
-                                    &mut total_in,
-                                    &mut count,
-                                    &mut last_log,
-                                    &mut last_log_bytes,
-                                    started,
-                                    total_expected,
-                                )?;
-                            }
                         }
-                    }
-                    Ok(())
+                        Ok(())
+                    })();
+                    drop(rx);
+                    consume_res
                 });
                 scope_res?;
             } else {
