@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -87,7 +85,14 @@ jobs:
           key: windows-release
       - name: Test release source
         run: cargo test --workspace --locked
+      - name: Cache JPEG XL tools
+        id: jxl-cache
+        uses: actions/cache@v4
+        with:
+          path: target/release/codecs
+          key: windows-jxl-${{ hashFiles('tools/prepare-jpeg-xl.ps1') }}
       - name: Prepare JPEG XL tools
+        if: steps.jxl-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./tools/prepare-jpeg-xl.ps1
       - name: Install Tauri CLI
