@@ -390,153 +390,6 @@ mod win {
         }
     }
 
-    pub fn who_locks_paths(paths: &[String]) -> Result<Vec<super::LockingProcess>, String> {
-        use std::path::PathBuf;
-        use windows::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA, WIN32_ERROR};
-        use windows::Win32::System::RestartManager::{
-            RmEndSession, RmGetList, RmRegisterResources, RmStartSession, CCH_RM_SESSION_KEY,
-            RM_PROCESS_INFO,
-        };
-        use windows::Win32::System::Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-            PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-
-        let mut files: Vec<PathBuf> = Vec::new();
-        for raw in paths {
-            let p = PathBuf::from(raw);
-            if p.is_file() {
-                files.push(p);
-            } else if p.is_dir() {
-                for entry in walkdir::WalkDir::new(&p).max_depth(3).into_iter().flatten() {
-                    if entry.file_type().is_file() {
-                        files.push(entry.into_path());
-                        if files.len() >= 200 {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if files.is_empty() {
-            return Err("нет файлов для проверки".into());
-        }
-
-        let wide_paths: Vec<Vec<u16>> = files
-            .iter()
-            .map(|p| wide(&p.to_string_lossy()))
-            .collect();
-        let pcwstrs: Vec<PCWSTR> = wide_paths.iter().map(|w| PCWSTR(w.as_ptr())).collect();
-
-        let mut session = 0u32;
-        let mut key = vec![0u16; (CCH_RM_SESSION_KEY + 1) as usize];
-        let err = unsafe { RmStartSession(&mut session, 0, windows::core::PWSTR(key.as_mut_ptr())) };
-        if err != WIN32_ERROR(0) {
-            return Err(format!("RmStartSession error: {}", err.0));
-        }
-
-        struct SessionGuard(u32);
-        impl Drop for SessionGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    let _ = RmEndSession(self.0);
-                }
-            }
-        }
-        let _guard = SessionGuard(session);
-
-        let reg_err = unsafe { RmRegisterResources(session, Some(&pcwstrs), None, None) };
-        if reg_err != WIN32_ERROR(0) {
-            return Err(format!("RmRegisterResources error: {}", reg_err.0));
-        }
-
-        let mut needed = 0u32;
-        let mut count = 0u32;
-        let mut reboot_reasons = 0u32;
-        let list_err = unsafe {
-            RmGetList(session, &mut needed, &mut count, None, &mut reboot_reasons)
-        };
-        if list_err == WIN32_ERROR(0) && needed == 0 {
-            return Ok(Vec::new());
-        }
-        if list_err != ERROR_MORE_DATA && list_err != WIN32_ERROR(0) {
-            return Err(format!("RmGetList error: {}", list_err.0));
-        }
-
-        let mut infos = vec![RM_PROCESS_INFO::default(); needed as usize];
-        count = needed;
-        let list_err2 = unsafe {
-            RmGetList(
-                session,
-                &mut needed,
-                &mut count,
-                Some(infos.as_mut_ptr()),
-                &mut reboot_reasons,
-            )
-        };
-        if list_err2 != WIN32_ERROR(0) {
-            return Err(format!("RmGetList error: {}", list_err2.0));
-        }
-
-        let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
-        for info in infos.into_iter().take(count as usize) {
-            let pid = info.Process.dwProcessId;
-            if pid == 0 || !seen.insert(pid) {
-                continue;
-            }
-            let app_len = info.strAppName.iter().position(|&c| c == 0).unwrap_or(info.strAppName.len());
-            let app_name = String::from_utf16_lossy(&info.strAppName[..app_len]).trim().to_string();
-
-            let mut exe_name = String::new();
-            unsafe {
-                if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-                    let mut buf = vec![0u16; 512];
-                    let mut len = buf.len() as u32;
-                    if QueryFullProcessImageNameW(
-                        h,
-                        PROCESS_NAME_WIN32,
-                        windows::core::PWSTR(buf.as_mut_ptr()),
-                        &mut len,
-                    )
-                    .is_ok()
-                    {
-                        let full = String::from_utf16_lossy(&buf[..len as usize]);
-                        exe_name = std::path::Path::new(&full)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                    let _ = CloseHandle(h);
-                }
-            }
-            let name = if exe_name.is_empty() {
-                if app_name.is_empty() { format!("PID {pid}") } else { app_name.clone() }
-            } else {
-                exe_name
-            };
-            out.push(super::LockingProcess { pid, name, app_name });
-        }
-        Ok(out)
-    }
-
-    pub fn kill_pid(pid: u32) -> Result<(), String> {
-        use windows::Win32::Foundation::CloseHandle;
-        use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
-
-        if pid == 0 || pid == std::process::id() {
-            return Err("недопустимый PID".into());
-        }
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
-                .map_err(|e| format!("не удалось открыть процесс {pid}: {e}"))?;
-            let res = TerminateProcess(handle, 1);
-            let _ = CloseHandle(handle);
-            res.map_err(|e| format!("не удалось завершить процесс {pid}: {e}"))
-        }
-    }
-
     fn send_keys(events: &[(u16, bool)]) {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -669,13 +522,6 @@ mod win {
     }
 }
 
-#[derive(Clone, Serialize)]
-pub struct LockingProcess {
-    pub pid: u32,
-    pub name: String,
-    pub app_name: String,
-}
-
 const EN_LAYOUT: &str = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>~@#$^&";
 const RU_LAYOUT: &str = "йцукенгшщзхъфывапролджэячсмитьбюёЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮЁ\"№;:?";
 
@@ -714,18 +560,16 @@ pub fn fix_keyboard_layout(text: &str) -> String {
 
 #[cfg(not(windows))]
 mod win {
-    use super::{ListeningPort, LockingProcess, StartupItem};
+    use super::{ListeningPort, StartupItem};
     pub fn startup_items() -> Result<Vec<StartupItem>, String> { Ok(Vec::new()) }
     pub fn set_startup_item(_: &str, _: bool) -> Result<(), String> { Err("Windows only".into()) }
     pub fn listening_ports(_: &std::collections::HashMap<u32, String>) -> Result<Vec<ListeningPort>, String> { Ok(Vec::new()) }
     pub fn reveal_in_explorer(_: &str) -> Result<(), String> { Err("Windows only".into()) }
     pub fn execute_power_action(_: &str) {}
-    pub fn who_locks_paths(_: &[String]) -> Result<Vec<LockingProcess>, String> { Err("Windows only".into()) }
-    pub fn kill_pid(_: u32) -> Result<(), String> { Err("Windows only".into()) }
     pub fn fix_selection_or_word_layout(_: &std::sync::atomic::AtomicU32) {}
 }
 
 pub use win::{
-    execute_power_action, fix_selection_or_word_layout, kill_pid, listening_ports,
-    reveal_in_explorer, set_startup_item, startup_items, who_locks_paths,
+    execute_power_action, fix_selection_or_word_layout, listening_ports,
+    reveal_in_explorer, set_startup_item, startup_items,
 };

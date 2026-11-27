@@ -87,6 +87,9 @@ jobs:
           key: windows-release
       - name: Test release source
         run: cargo test --workspace --locked
+      - name: Prepare JPEG XL tools
+        shell: pwsh
+        run: ./tools/prepare-jpeg-xl.ps1
       - name: Install Tauri CLI
         run: npm install --global --ignore-scripts --no-audit --no-fund @tauri-apps/cli@2.10.0
       - name: Prepare updater configuration
@@ -99,7 +102,13 @@ jobs:
           }
           if (-not $env:UPDATE_PUBLIC_KEY) { throw 'Set the TAURI_SIGNING_PUBLIC_KEY repository variable.' }
           @{
-            bundle = @{ createUpdaterArtifacts = $true }
+            bundle = @{
+              createUpdaterArtifacts = $true
+              resources = @{
+                '../target/release/codecs/' = 'codecs/'
+                'licenses/UnRAR.txt' = 'licenses/UnRAR.txt'
+              }
+            }
             plugins = @{ updater = @{
               pubkey = $env:UPDATE_PUBLIC_KEY.Trim()
               endpoints = @("https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download/latest.json")

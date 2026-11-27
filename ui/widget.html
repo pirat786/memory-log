@@ -81,9 +81,9 @@
       place-items: center;
       padding: 0;
     }
-    .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; min-height: 0; min-width: 0; }
+    .tab-pane { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; min-height: 0; min-width: 0; overflow-y: auto; }
     .timer-row { display: flex; align-items: center; gap: 6px; }
-    .timer-row input, .timer-row select {
+    .timer-row select {
       padding: 6px 8px;
       border-radius: 9px;
       border: 1px solid var(--line);
@@ -92,7 +92,6 @@
       font: inherit;
       outline: none;
     }
-    .timer-row input { width: 64px; text-align: center; user-select: text; }
     .timer-row select { flex: 1; min-width: 0; }
     .drop-zone {
       border: 1.5px dashed var(--line);
@@ -140,6 +139,10 @@
       flex-shrink: 0;
     }
     .drop-result button:hover { border-color: var(--accent); }
+    .drop-outputs { display: grid; gap: 6px; }
+    .drop-outputs:empty { display: none; }
+    .drop-errors { padding: 0 4px; color: var(--muted); font-size: 11px; white-space: pre-line; overflow-wrap: anywhere; }
+    .drop-errors:empty { display: none; }
     .drop-bar {
       width: 100%;
       height: 5px;
@@ -153,48 +156,6 @@
       background: var(--accent);
       transition: width .12s linear;
     }
-    .lock-list {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      max-height: 76px;
-      overflow-y: auto;
-    }
-    .lock-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      padding: 4px 8px;
-      border-radius: 8px;
-      background: var(--surface);
-      font-size: 11px;
-    }
-    .lock-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lock-row button {
-      padding: 2px 7px;
-      border-radius: 6px;
-      border: 1px solid var(--line);
-      background: var(--bg);
-      color: var(--text);
-      font: 600 10.5px/1.2 inherit;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .lock-row button:hover { border-color: #d9534f; color: #d9534f; }
-    .drop-zone.danger { border-color: rgba(217, 83, 79, .45); color: #d9534f; }
-    .btn-danger { border-color: #d9534f !important; color: #d9534f !important; }
-    .drop-opt {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: var(--muted);
-      cursor: pointer;
-      padding: 0 2px;
-    }
-    .drop-opt input { margin: 0; accent-color: var(--accent); cursor: pointer; }
-    .drop-opt:has(input:checked) { color: #d9534f; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -215,37 +176,22 @@
 
     <div id="pane-files" class="tab-pane">
       <div class="timer-row">
-        <select id="dropMode">
-          <option value="auto" data-i18n="widget.files.mode_auto">Авто (Фото / ZIP)</option>
-          <option value="jpg" data-i18n="widget.files.mode_jpg">Фото → JPG</option>
-          <option value="zip" data-i18n="widget.files.mode_zip">Упаковать в ZIP</option>
-          <option value="locks" data-i18n="widget.files.mode_locks">Кто держит файл?</option>
-          <option value="delete" data-i18n="widget.files.mode_delete">Удалить мимо корзины</option>
-        </select>
-        <select id="dropMaxDim" style="flex:0 0 98px">
-          <option value="1920" data-i18n="widget.files.dim_1920">≤ 1920px</option>
-          <option value="2560" data-i18n="widget.files.dim_2560">≤ 2560px</option>
-          <option value="0" data-i18n="widget.files.dim_0">Оригинал</option>
-        </select>
-        <select id="dropZipMode" style="flex:0 0 132px" hidden>
+        <select id="dropZipMode" data-i18n-title="widget.files.zip_mode_title" title="Сжатие">
           <option value="fast" data-i18n="widget.files.zip_fast">Быстрое (ZIP)</option>
           <option value="max" data-i18n="widget.files.zip_max">Баланс (ZIP)</option>
           <option value="solid" data-i18n="widget.files.zip_solid">Сильное (.tar.zst)</option>
           <option value="ultra" data-i18n="widget.files.zip_ultra">Очень сильное (.tar.zst)</option>
         </select>
       </div>
-      <label id="dropDeleteAfterRow" class="drop-opt">
-        <input id="dropDeleteAfter" type="checkbox">
-        <span data-i18n="widget.files.delete_after_zip">Удалять оригинал после архива</span>
-      </label>
-      <div id="dropZone" class="drop-zone" data-i18n="widget.files.drop_hint">Перетащи фото, файлы или ZIP сюда</div>
+      <div id="dropZone" class="drop-zone" data-i18n="widget.files.drop_hint">Перетащи файлы, папки или архивы</div>
       <div id="dropBar" class="drop-bar" hidden><div id="dropFill" class="drop-fill"></div></div>
       <div id="dropResult" class="drop-result" hidden>
         <span id="dropSummary"></span>
         <button id="dropCancel" type="button" data-i18n="widget.files.cancel" hidden>Отмена</button>
         <button id="dropReveal" type="button" data-i18n="widget.files.reveal" hidden>Папка</button>
       </div>
-      <div id="lockList" class="lock-list" hidden></div>
+      <div id="dropOutputs" class="drop-outputs" aria-live="polite"></div>
+      <div id="dropErrors" class="drop-errors" role="status"></div>
     </div>
   </div>
 

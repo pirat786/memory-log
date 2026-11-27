@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -83,6 +83,7 @@ pub(super) struct BgFileWriter {
     recycle_rx: mpsc::Receiver<Vec<u8>>,
     handle: Option<JoinHandle<io::Result<File>>>,
     send_wait: Arc<AtomicU64>,
+    aborted: Arc<AtomicBool>,
 }
 
 impl BgFileWriter {
@@ -94,17 +95,24 @@ impl BgFileWriter {
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(queue_slots);
         let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
         let send_wait = Arc::new(AtomicU64::new(0));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let aborted_bg = Arc::clone(&aborted);
         let max_recycle_cap = chunk_size.saturating_mul(2);
 
         let handle = std::thread::spawn(move || -> io::Result<File> {
             while let Ok(mut chunk) = rx.recv() {
+                if aborted_bg.load(Ordering::Relaxed) {
+                    break;
+                }
                 file.write_all(&chunk)?;
                 if chunk.capacity() <= max_recycle_cap {
                     chunk.clear();
                     let _ = recycle_tx.send(chunk);
                 }
             }
-            file.flush()?;
+            if !aborted_bg.load(Ordering::Relaxed) {
+                file.flush()?;
+            }
             Ok(file)
         });
 
@@ -115,11 +123,15 @@ impl BgFileWriter {
             recycle_rx,
             handle: Some(handle),
             send_wait: Arc::clone(&send_wait),
+            aborted,
         };
         (writer, send_wait)
     }
 
     fn send_full_buf(&mut self) -> io::Result<()> {
+        if is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "отменено"));
+        }
         if self.buf.is_empty() {
             return Ok(());
         }
@@ -181,6 +193,9 @@ impl Write for BgFileWriter {
 
 impl Drop for BgFileWriter {
     fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.aborted.store(true, Ordering::Relaxed);
+        }
         drop(self.tx.take());
         if let Some(h) = self.handle.take() {
             let _ = h.join();

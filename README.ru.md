@@ -94,6 +94,8 @@ cargo build --release --manifest-path app/Cargo.toml --features tauri/custom-pro
 затем `cd app && cargo tauri dev` или `cd app && cargo tauri build`.
 Иконки: `cd app && cargo tauri icon путь/к/картинке.png`.
 
+Режим сжатия «Очень сильное (.tar.zst)» в виджете автоматически сжимает PNG и JPEG с помощью JPEG XL без потерь, если это уменьшает размер, и восстанавливает исходные PNG/JPEG при распаковке. Установщики Windows включают утилиты JPEG XL. Для локальной release-сборки запустите `./tools/prepare-jpeg-xl.ps1` из корня проекта и держите полученную папку `codecs` рядом с `memory-log.exe`.
+
 ## Структура проекта
 
 ```

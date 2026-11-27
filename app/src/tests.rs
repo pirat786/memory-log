@@ -129,13 +129,13 @@ mod quick_files {
 
     use image::codecs::jpeg::JpegEncoder;
     use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
-    use image::{DynamicImage, ImageBuffer, ImageEncoder, Rgb};
+    use image::{ImageBuffer, ImageEncoder, Rgb};
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
 
     use crate::quick_files::{
-        check_free_space, fast_delete, handle_drop, io_hints, pack_solid, pack_zip,
-        process_images, unpack_solid, unpack_zip, QuickFileReport,
+        check_free_space, handle_archive_drop, io_hints, pack_solid, pack_solid_ultra, pack_zip,
+        unpack_solid, unpack_zip, QuickFileReport,
     };
 
     fn print_speed(label: &str, rep: &QuickFileReport) {
@@ -266,31 +266,6 @@ mod quick_files {
     }
 
     #[test]
-    fn large_image_compress_and_resize() {
-        let dir = TestDir::new();
-        let img_path = dir.path().join("huge.png");
-
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4000, 3000, |x, y| {
-            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
-        });
-        DynamicImage::ImageRgb8(img).save(&img_path).unwrap();
-
-        let rep = process_images(
-            vec![img_path.to_string_lossy().into_owned()],
-            "jpg",
-            1920,
-            82,
-            None,
-        )
-        .unwrap();
-        print_speed("4K PNG -> JPG 1920", &rep);
-        assert_eq!(rep.count, 1);
-        assert_eq!(rep.detail, "1920×1440");
-        assert!(Path::new(&rep.output_path).exists());
-        assert!(rep.output_bytes < rep.input_bytes);
-    }
-
-    #[test]
     fn unpack_blocks_zip_slip() {
         let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
@@ -311,230 +286,128 @@ mod quick_files {
     }
 
     #[test]
-    fn image_scenarios_benchmark() {
+    fn auto_mode_packs_images_and_files_and_unpacks_archives() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
+        let archive = dir.path().join("archive.zip");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        writer.start_file("inside.txt", SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"archive content").unwrap();
+        writer.finish().unwrap();
 
-        // 1. 4000x3000 noisy photo-like JPEG (Q85)
-        let photo_4k = dir.path().join("photo_4k.jpg");
-        {
-            let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(4000, 3000, |x, y| {
-                let n = ((x.wrapping_mul(37) ^ y.wrapping_mul(17)) % 23) as u8;
-                Rgb([
-                    ((x * 255 / 4000) as u8).saturating_add(n),
-                    ((y * 255 / 3000) as u8).saturating_add(n),
-                    (((x + y) * 127 / 7000) as u8).saturating_add(n),
-                ])
-            });
-            let f = File::create(&photo_4k).unwrap();
-            JpegEncoder::new_with_quality(BufWriter::new(f), 85)
-                .write_image(img.as_raw(), 4000, 3000, image::ExtendedColorType::Rgb8)
-                .unwrap();
-        }
-
-        // 2. 1920x1080 already compressed JPEG (Q72)
-        let photo_hd_q72 = dir.path().join("photo_hd_q72.jpg");
-        {
-            let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(1920, 1080, |x, y| {
-                let n = ((x.wrapping_mul(31) ^ y.wrapping_mul(13)) % 29) as u8;
-                Rgb([
-                    ((x * 255 / 1920) as u8).saturating_add(n),
-                    ((y * 255 / 1080) as u8).saturating_add(n),
-                    120u8.saturating_add(n),
-                ])
-            });
-            let f = File::create(&photo_hd_q72).unwrap();
-            JpegEncoder::new_with_quality(BufWriter::new(f), 72)
-                .write_image(img.as_raw(), 1920, 1080, image::ExtendedColorType::Rgb8)
-                .unwrap();
-        }
-
-        // 3. 1920x1080 RGB PNG (screenshot-like)
-        let screenshot_png = dir.path().join("screenshot.png");
-        {
-            let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(1920, 1080, |x, y| {
-                if (x / 100 + y / 100) % 2 == 0 {
-                    Rgb([30, 34, 42])
-                } else {
-                    Rgb([220, 224, 230])
-                }
-            });
-            let f = File::create(&screenshot_png).unwrap();
-            PngEncoder::new_with_quality(BufWriter::new(f), CompressionType::Default, PngFilter::Adaptive)
-                .write_image(img.as_raw(), 1920, 1080, image::ExtendedColorType::Rgb8)
-                .unwrap();
-        }
-
-        for (label, path, mode, dim) in [
-            ("4K JPG -> compress 1920", &photo_4k, "compress", 1920),
-            ("4K JPG -> webp 1920", &photo_4k, "webp", 1920),
-            ("HD Q72 JPG -> compress 1920", &photo_hd_q72, "compress", 1920),
-            ("HD PNG -> compress 1920", &screenshot_png, "compress", 1920),
-            ("HD PNG -> jpg 1920", &screenshot_png, "jpg", 1920),
-            ("HD PNG -> webp 1920", &screenshot_png, "webp", 1920),
-        ] {
-            let rep = process_images(
-                vec![path.to_string_lossy().into_owned()],
-                mode,
-                dim,
-                82,
-                None,
-            )
+        let photo = dir.path().join("scan.PNG");
+        let pixels = (0..256u16)
+            .flat_map(|y| (0..256u16).flat_map(move |x| [x as u8, y as u8, 80, (x % 2 * 255) as u8]))
+            .collect::<Vec<_>>();
+        PngEncoder::new_with_quality(File::create(&photo).unwrap(), CompressionType::Fast, PngFilter::NoFilter)
+            .write_image(&pixels, 256, 256, image::ExtendedColorType::Rgba8)
             .unwrap();
-            print_speed(label, &rep);
-            assert!(Path::new(&rep.output_path).exists());
-            if mode == "compress" {
-                assert!(
-                    rep.output_bytes <= rep.input_bytes,
-                    "{label} grew: {} -> {}",
-                    rep.input_bytes,
-                    rep.output_bytes
-                );
-            }
-        }
+        let document = dir.path().join("document.txt");
+        fs::write(&document, b"separate document").unwrap();
+        let broken = dir.path().join("broken.xz");
+        fs::write(&broken, b"unsupported archive").unwrap();
 
-        // 4. EXIF Orientation = 6 (90° CW): 120x80 raw JPEG should become 80x120
-        let exif_jpg = dir.path().join("portrait_exif6.jpg");
-        {
-            let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                ImageBuffer::from_fn(120, 80, |x, _| Rgb([if x < 60 { 255 } else { 0 }, 0, 0]));
-            let mut raw_jpg = Vec::new();
-            JpegEncoder::new_with_quality(&mut raw_jpg, 85)
-                .write_image(img.as_raw(), 120, 80, image::ExtendedColorType::Rgb8)
-                .unwrap();
-            let app1: [u8; 32] = [
-                0xFF, 0xE1, 0x00, 0x1E, b'E', b'x', b'i', b'f', 0x00, 0x00, b'I', b'I', 0x2A,
-                0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00,
-                0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
-            ];
-            let mut with_exif = Vec::with_capacity(raw_jpg.len() + app1.len());
-            with_exif.extend_from_slice(&raw_jpg[..2]);
-            with_exif.extend_from_slice(&app1);
-            with_exif.extend_from_slice(&raw_jpg[2..]);
-            fs::write(&exif_jpg, with_exif).unwrap();
-        }
-        let exif_rep = process_images(
-            vec![exif_jpg.to_string_lossy().into_owned()],
-            "compress",
-            1920,
-            82,
-            None,
-        )
-        .unwrap();
-        assert_eq!(exif_rep.detail, "80×120");
-    }
-
-    #[test]
-    fn processes_folder_of_images_and_fast_deletes() {
-        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = TestDir::new();
-        let src = dir.path().join("photos");
-        let nested = src.join("sub");
-        fs::create_dir_all(&nested).unwrap();
-
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-            ImageBuffer::from_fn(200, 100, |x, y| Rgb([(x % 256) as u8, (y % 256) as u8, 80]));
-        DynamicImage::ImageRgb8(img.clone()).save(src.join("a.png")).unwrap();
-        DynamicImage::ImageRgb8(img).save(nested.join("b.png")).unwrap();
-
-        let rep = handle_drop(
-            vec![src.to_string_lossy().into_owned()],
-            "jpg",
-            1920,
-            82,
+        let result = handle_archive_drop(
+            [&archive, &photo, &document, &broken]
+                .map(|p| p.to_string_lossy().into_owned())
+                .to_vec(),
             "fast",
-            false,
             None,
         )
         .unwrap();
-        assert_eq!(rep.count, 2);
-        let out_dir = Path::new(&rep.output_path);
-        assert!(out_dir.is_dir());
-        assert!(out_dir.join("a.jpg").exists());
-        assert!(out_dir.join("sub").join("b.jpg").exists());
-
-        let del_rep = fast_delete(vec![src.to_string_lossy().into_owned()], None).unwrap();
-        print_speed("Fast delete", &del_rep);
-        assert_eq!(del_rep.count, 2);
-        assert!(!src.exists());
-
-        assert!(fast_delete(vec![r"C:\".into()], None).is_err());
-    }
-
-    #[test]
-    fn auto_mode_compresses_photo_only_folder_and_zips_mixed_folder() {
-        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = TestDir::new();
-        let photo_dir = dir.path().join("album");
-        let mixed_dir = dir.path().join("mixed");
-        fs::create_dir_all(&photo_dir).unwrap();
-        fs::create_dir_all(&mixed_dir).unwrap();
-
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-            ImageBuffer::from_fn(200, 100, |x, y| Rgb([(x % 256) as u8, (y % 256) as u8, 40]));
-        DynamicImage::ImageRgb8(img.clone()).save(photo_dir.join("1.png")).unwrap();
-        DynamicImage::ImageRgb8(img).save(mixed_dir.join("1.png")).unwrap();
-        fs::write(mixed_dir.join("notes.txt"), b"hello").unwrap();
-
-        let rep_photo = handle_drop(
-            vec![photo_dir.to_string_lossy().into_owned()],
-            "auto",
-            1920,
-            82,
-            "fast",
-            false,
-            None,
-        )
-        .unwrap();
-        assert_eq!(rep_photo.kind, "image");
-        assert!(Path::new(&rep_photo.output_path).is_dir());
-
-        let rep_mixed = handle_drop(
-            vec![mixed_dir.to_string_lossy().into_owned()],
-            "auto",
-            1920,
-            82,
-            "fast",
-            false,
-            None,
-        )
-        .unwrap();
-        assert_eq!(rep_mixed.kind, "zip-pack");
-        assert!(rep_mixed.output_path.ends_with(".zip"));
-    }
-
-    #[test]
-    fn auto_mode_ignores_system_junk_in_photo_folder_and_unpacks_zip() {
-        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = TestDir::new();
-        let album = dir.path().join("camera_roll");
-        fs::create_dir_all(&album).unwrap();
-        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
-            ImageBuffer::from_fn(120, 80, |x, y| Rgb([x as u8, y as u8, 90]));
-        DynamicImage::ImageRgb8(img).save(album.join("pic.png")).unwrap();
-        fs::write(album.join("Thumbs.db"), b"junk").unwrap();
-        fs::write(album.join("desktop.ini"), b"[ViewState]").unwrap();
-
-        let rep = handle_drop(
-            vec![album.to_string_lossy().into_owned()],
-            "auto",
-            1920,
-            82,
-            "fast",
-            false,
-            None,
-        )
-        .unwrap();
-        assert_eq!(rep.kind, "image");
-        assert_eq!(rep.count, 1);
-
-        // Auto mode unpacks a single .zip file
-        let zip_src = dir.path().join("bundle");
-        fs::create_dir_all(&zip_src).unwrap();
-        fs::write(zip_src.join("readme.txt"), b"hello world").unwrap();
-        let packed = pack_zip(vec![zip_src.to_string_lossy().into_owned()], "normal", None).unwrap();
-        let unpacked = handle_drop(vec![packed.output_path], "auto", 1920, 82, "fast", false, None).unwrap();
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("broken.xz"));
+        let [unpacked, packed] = result.reports.as_slice() else {
+            panic!("expected two operations: unpack + pack, got {:?}", result.reports);
+        };
         assert_eq!(unpacked.kind, "zip-unpack");
-        assert_eq!(unpacked.count, 1);
+        assert_eq!(
+            fs::read(Path::new(&unpacked.output_path).join("inside.txt")).unwrap(),
+            b"archive content"
+        );
+        assert_eq!(packed.kind, "zip-pack");
+        assert!(packed.output_path.ends_with(".zip"));
+        let mut packed_zip = zip::ZipArchive::new(File::open(&packed.output_path).unwrap()).unwrap();
+        assert_eq!(packed_zip.len(), 2);
+        assert!(packed_zip.by_name("scan.PNG").is_ok());
+        assert!(packed_zip.by_name("document.txt").is_ok());
+    }
+
+    #[test]
+    fn ultra_mode_roundtrips_png_jpeg_and_text_with_jxl() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let payload = dir.path().join("media_bundle");
+        fs::create_dir_all(&payload).unwrap();
+
+        let png_path = payload.join("кириллица_снимок.png");
+        let png_pixels = (0..256u16)
+            .flat_map(|y| (0..256u16).flat_map(move |x| [x as u8, y as u8, 100, 255]))
+            .collect::<Vec<_>>();
+        PngEncoder::new_with_quality(File::create(&png_path).unwrap(), CompressionType::Fast, PngFilter::NoFilter)
+            .write_image(&png_pixels, 256, 256, image::ExtendedColorType::Rgba8)
+            .unwrap();
+
+        let jpg_path = payload.join("photo.jpg");
+        let jpg_img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(320, 240, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        });
+        let mut orig_jpg = Vec::new();
+        JpegEncoder::new_with_quality(&mut orig_jpg, 90)
+            .encode_image(&jpg_img)
+            .unwrap();
+        fs::write(&jpg_path, &orig_jpg).unwrap();
+
+        let txt_path = payload.join("notes.txt");
+        fs::write(&txt_path, b"plain text content inside ultra archive").unwrap();
+
+        let packed = pack_solid_ultra(vec![payload.to_string_lossy().into_owned()], None).unwrap();
+        assert_eq!(packed.kind, "zip-pack");
+        assert!(packed.output_path.ends_with(".tar.zst"));
+        assert_eq!(packed.count, 3);
+
+        let unpacked_res = handle_archive_drop(vec![packed.output_path.clone()], "ultra", None).unwrap();
+        assert!(unpacked_res.errors.is_empty(), "{:?}", unpacked_res.errors);
+        assert_eq!(unpacked_res.reports.len(), 1);
+        let unpacked = &unpacked_res.reports[0];
+        assert_eq!(unpacked.kind, "zip-unpack");
+        assert_eq!(unpacked.count, 3);
+
+        let out_dir = Path::new(&unpacked.output_path);
+        assert!(!out_dir.join(".memory-log-codecs.json").exists());
+        assert!(!out_dir.join("photo.jpg.jxl").exists());
+        assert!(!out_dir.join("кириллица_снимок.png.jxl").exists());
+        assert_eq!(fs::read(out_dir.join("photo.jpg")).unwrap(), orig_jpg);
+        let restored_png = image::open(out_dir.join("кириллица_снимок.png")).unwrap().into_rgba8();
+        assert_eq!(restored_png.dimensions(), (256, 256));
+        assert_eq!(restored_png.into_raw(), png_pixels);
+        assert_eq!(
+            fs::read(out_dir.join("notes.txt")).unwrap(),
+            b"plain text content inside ultra archive"
+        );
+    }
+
+    #[test]
+    fn solid_unpack_rejects_traversal_in_codec_manifest() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let evil_arch = dir.path().join("evil.tar.zst");
+        {
+            let f = File::create(&evil_arch).unwrap();
+            let enc = zstd::stream::write::Encoder::new(f, 3).unwrap();
+            let mut tar = tar::Builder::new(enc);
+            let manifest = br#"{"v":1,"jxl":[{"stored":"a.jxl","original":"../escape.png","format":"png"}]}"#;
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(manifest.len() as u64);
+            header.set_cksum();
+            tar.append_data(&mut header, ".memory-log-codecs.json", &manifest[..]).unwrap();
+            let enc = tar.into_inner().unwrap();
+            enc.finish().unwrap();
+        }
+        let err = unpack_solid(evil_arch.to_string_lossy().into_owned(), None).unwrap_err();
+        assert!(err.contains("небезопасный путь"), "unexpected err: {err}");
+        assert!(!dir.path().join("escape.png").exists());
     }
 
     #[test]
@@ -570,7 +443,7 @@ mod quick_files {
         crate::quick_files::cancel_drop();
         let res = t.join().expect("pack_zip thread panicked");
         // Reset flag for subsequent tests
-        crate::quick_files::handle_drop(vec![], "zip", 0, 82, "fast", false, None).ok();
+        crate::quick_files::handle_archive_drop(vec![], "fast", None).ok();
         match res {
             Err(e) => assert!(e.contains("отменено"), "unexpected err: {e}"),
             Ok(rep) => {
@@ -581,27 +454,46 @@ mod quick_files {
     }
 
     #[test]
-    fn handle_drop_delete_after_zip_removes_originals() {
+    fn pack_solid_ultra_cancel_returns_quickly() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let src = dir.path().join("ultra_cancel");
+        fs::create_dir_all(&src).unwrap();
+        let payload = "Memory Log ultra cancel check 0123456789abcdef\n".repeat(16 * 1024);
+        for i in 0..24 {
+            fs::write(src.join(format!("chunk_{i:02}.txt")), &payload).unwrap();
+        }
+
+        let src_str = src.to_string_lossy().into_owned();
+        let started = std::time::Instant::now();
+        let t = std::thread::spawn(move || pack_solid_ultra(vec![src_str], None));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        crate::quick_files::cancel_drop();
+        let res = t.join().expect("pack_solid_ultra thread panicked");
+        let elapsed = started.elapsed();
+        crate::quick_files::handle_archive_drop(vec![], "fast", None).ok();
+        assert!(elapsed.as_secs_f64() < 2.0, "cancel took too long: {elapsed:?}");
+        if let Ok(rep) = res {
+            let _ = fs::remove_file(&rep.output_path);
+        }
+    }
+
+    #[test]
+    fn handle_archive_drop_packs_folder_and_keeps_originals() {
         let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TestDir::new();
         let src = dir.path().join("to_archive");
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("a.bin"), vec![1u8; 4096]).unwrap();
-        fs::write(src.join("b.txt"), b"hello delete after zip").unwrap();
+        fs::write(src.join("b.txt"), b"hello archive").unwrap();
 
-        let rep = handle_drop(
-            vec![src.to_string_lossy().into_owned()],
-            "zip",
-            1920,
-            82,
-            "fast",
-            true,
-            None,
-        )
-        .unwrap();
+        let res = handle_archive_drop(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
+        assert!(res.errors.is_empty());
+        assert_eq!(res.reports.len(), 1);
+        let rep = &res.reports[0];
         assert_eq!(rep.kind, "zip-pack");
-        assert!(rep.deleted_original);
-        assert!(!src.exists());
+        assert!(!rep.deleted_original);
+        assert!(src.exists());
         assert!(Path::new(&rep.output_path).is_file());
     }
 
@@ -693,30 +585,17 @@ mod quick_files {
         }
 
         let fast_rep = pack_zip(vec![src.to_string_lossy().into_owned()], "fast", None).unwrap();
-        let solid_rep = handle_drop(
-            vec![src.to_string_lossy().into_owned()],
-            "zip",
-            1920,
-            82,
-            "solid",
-            false,
-            None,
-        )
-        .unwrap();
+        let solid_res =
+            handle_archive_drop(vec![src.to_string_lossy().into_owned()], "solid", None).unwrap();
+        assert!(solid_res.errors.is_empty());
+        let solid_rep = solid_res.reports.into_iter().next().unwrap();
         assert!(solid_rep.output_path.ends_with(".tar.zst"));
         assert_eq!(solid_rep.count, 20);
         assert!(solid_rep.output_bytes < fast_rep.output_bytes / 4);
 
-        let unpacked = handle_drop(
-            vec![solid_rep.output_path],
-            "auto",
-            1920,
-            82,
-            "fast",
-            false,
-            None,
-        )
-        .unwrap();
+        let unpacked_res = handle_archive_drop(vec![solid_rep.output_path], "fast", None).unwrap();
+        assert!(unpacked_res.errors.is_empty());
+        let unpacked = unpacked_res.reports.into_iter().next().unwrap();
         assert_eq!(unpacked.kind, "zip-unpack");
         assert_eq!(unpacked.count, 20);
         assert_eq!(
@@ -810,16 +689,14 @@ mod quick_files {
             let enc = tb.into_inner().unwrap();
             enc.finish().unwrap();
         }
-        let rep_tgz = handle_drop(
+        let rep_tgz = handle_archive_drop(
             vec![tgz_path.to_string_lossy().into_owned()],
-            "auto",
-            1920,
-            82,
             "fast",
-            false,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .reports
+        .remove(0);
         assert_eq!(rep_tgz.kind, "zip-unpack");
         assert_eq!(rep_tgz.count, 1);
         assert_eq!(
@@ -835,16 +712,14 @@ mod quick_files {
             enc.write_all(b"standalone gz content").unwrap();
             enc.finish().unwrap();
         }
-        let rep_gz = handle_drop(
+        let rep_gz = handle_archive_drop(
             vec![gz_path.to_string_lossy().into_owned()],
-            "auto",
-            1920,
-            82,
             "fast",
-            false,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .reports
+        .remove(0);
         assert_eq!(rep_gz.kind, "zip-unpack");
         assert_eq!(rep_gz.count, 1);
         assert_eq!(fs::read_to_string(&rep_gz.output_path).unwrap(), "standalone gz content");
@@ -889,27 +764,58 @@ mod quick_files {
             tb.into_inner().unwrap().finish().unwrap();
         }
 
-        let rep = handle_drop(
+        let result = handle_archive_drop(
             vec![
                 z.output_path,
                 s.output_path,
                 tgz_path.to_string_lossy().into_owned(),
             ],
-            "auto",
-            1920,
-            82,
             "fast",
-            false,
             None,
         )
         .unwrap();
-        assert_eq!(rep.kind, "zip-unpack");
-        assert_eq!(rep.count, 3);
-        assert_eq!(rep.detail, "3 arch");
+        assert!(result.errors.is_empty());
+        assert_eq!(result.reports.len(), 3);
+        assert!(result.reports.iter().all(|report| report.kind == "zip-unpack" && report.count == 1));
         assert_eq!(fs::read_to_string(dir.path().join("alpha (2)/a.txt")).unwrap(), "from zip");
         assert_eq!(fs::read_to_string(dir.path().join("beta (2)/b.txt")).unwrap(), "from solid");
         assert_eq!(fs::read_to_string(dir.path().join("gamma/c.txt")).unwrap(), "from targz");
     }
+
+    #[test]
+    fn auto_mode_recognizes_renamed_zip_and_plain_tar() {
+        let _guard = ZIP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TestDir::new();
+        let zip_path = dir.path().join("zip-contents.bin");
+        let mut zip = ZipWriter::new(File::create(&zip_path).unwrap());
+        zip.start_file("inside.txt", SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"zip").unwrap();
+        zip.finish().unwrap();
+        let document = dir.path().join("sample.docx");
+        fs::copy(&zip_path, &document).unwrap();
+
+        let tar_path = dir.path().join("tar-contents.dat");
+        let mut tar = tar::Builder::new(File::create(&tar_path).unwrap());
+        let mut header = tar::Header::new_ustar();
+        header.set_size(3);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "sub/inside.txt", &b"tar"[..]).unwrap();
+        tar.finish().unwrap();
+
+        let result = handle_archive_drop(
+            [zip_path, tar_path, document].map(|path| path.to_string_lossy().into_owned()).to_vec(),
+            "fast",
+            None,
+        ).unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.reports.len(), 3);
+        assert_eq!(fs::read(Path::new(&result.reports[0].output_path).join("inside.txt")).unwrap(), b"zip");
+        assert_eq!(fs::read(Path::new(&result.reports[1].output_path).join("sub/inside.txt")).unwrap(), b"tar");
+        let mut packed = zip::ZipArchive::new(File::open(&result.reports[2].output_path).unwrap()).unwrap();
+        assert!(packed.by_name("sample.docx").is_ok());
+    }
+
 
     #[test]
     fn batch_pack_multiple_files_and_folders_zip_and_solid() {
@@ -1008,30 +914,26 @@ mod quick_files {
         fs::write(src.join("notes.txt"), &text).unwrap();
         fs::write(src.join("copy.log"), &text).unwrap();
 
-        let rep = handle_drop(
+        let rep = handle_archive_drop(
             vec![src.to_string_lossy().into_owned()],
-            "zip",
-            1920,
-            82,
             "ultra",
-            false,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .reports
+        .remove(0);
         assert!(rep.output_path.ends_with(".tar.zst"));
         assert_eq!(rep.count, 2);
         assert!(rep.output_bytes < rep.input_bytes / 10);
 
-        let unp = handle_drop(
+        let unp = handle_archive_drop(
             vec![rep.output_path],
-            "auto",
-            1920,
-            82,
             "fast",
-            false,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .reports
+        .remove(0);
         assert_eq!(unp.kind, "zip-unpack");
         assert_eq!(unp.count, 2);
         let out_dir = Path::new(&unp.output_path);
@@ -1077,35 +979,6 @@ mod quick_files {
         assert_eq!(fs::read_to_string(out_dir.join("big_stream.txt")).unwrap(), big_text);
     }
 
-    #[test]
-    fn fast_delete_rejects_empty_and_userprofile() {
-        assert!(fast_delete(vec![], None).is_err());
-        if let Some(profile) = std::env::var_os("USERPROFILE") {
-            assert!(fast_delete(vec![profile.to_string_lossy().into_owned()], None).is_err());
-        }
-    }
-
-    #[test]
-    fn transparent_png_preserves_alpha_channel() {
-        use image::Rgba;
-        let dir = TestDir::new();
-        let png_path = dir.path().join("alpha.png");
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_fn(100, 100, |x, _| {
-            if x < 50 { Rgba([255, 0, 0, 0]) } else { Rgba([0, 255, 0, 255]) }
-        });
-        DynamicImage::ImageRgba8(img).save(&png_path).unwrap();
-
-        let rep = process_images(
-            vec![png_path.to_string_lossy().into_owned()],
-            "compress",
-            1920,
-            82,
-            None,
-        )
-        .unwrap();
-        let out = image::open(&rep.output_path).unwrap();
-        assert!(out.color().has_alpha());
-    }
 }
 
 mod state_widget {
@@ -1162,7 +1035,13 @@ mod state_widget {
 
 mod sys_tools_extra {
     use std::fs;
-    use crate::sys_tools::{fix_keyboard_layout, kill_pid, who_locks_paths};
+    use std::path::PathBuf;
+
+    use crate::sys_tools::fix_keyboard_layout;
+    use crate::sys_tools::lock_watch::{
+        extract_candidate_names, file_url_to_path, format_prompt_message, is_in_use_dialog_title,
+        is_protected_process, resolve_locked_path, LockingProcess,
+    };
 
     #[test]
     fn layout_preserves_numbers_and_empty_text() {
@@ -1171,24 +1050,73 @@ mod sys_tools_extra {
     }
 
     #[test]
-    fn kill_pid_validates_inputs() {
-        assert!(kill_pid(0).is_err());
-        assert!(kill_pid(std::process::id()).is_err());
+    fn lock_watch_matches_ru_and_en_in_use_titles() {
+        assert!(is_in_use_dialog_title("Папка уже используется"));
+        assert!(is_in_use_dialog_title("  файл используется "));
+        assert!(is_in_use_dialog_title("Folder In Use"));
+        assert!(is_in_use_dialog_title("File In Use"));
+        assert!(!is_in_use_dialog_title("Проводник"));
+        assert!(!is_in_use_dialog_title("Удаление файла"));
     }
 
     #[test]
-    fn who_locks_paths_reports_free_file_and_errors_on_missing() {
-        assert!(who_locks_paths(&["Z:\\definitely_missing_123456.txt".into()]).is_err());
+    fn lock_watch_protects_system_and_self_processes() {
+        assert!(is_protected_process("explorer.exe", 1234));
+        assert!(is_protected_process("CSRSS.EXE", 555));
+        assert!(is_protected_process("notepad.exe", 0));
+        assert!(is_protected_process("notepad.exe", 4));
+        assert!(is_protected_process("memory-log.exe", std::process::id()));
+        assert!(!is_protected_process("Code.exe", 4242));
+        assert!(!is_protected_process("python.exe", 9999));
+    }
 
-        let dir = std::env::temp_dir().join(format!("ml_lock_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("free.txt");
-        fs::write(&f, b"ok").unwrap();
+    #[test]
+    fn lock_watch_extracts_and_resolves_cyrillic_folder_from_dialog_texts() {
+        let root = std::env::temp_dir().join(format!("ml_lw_{}", uuid::Uuid::new_v4()));
+        let target = root.join("Фотографии и время (2)");
+        fs::create_dir_all(&target).unwrap();
 
-        let locks = who_locks_paths(&[f.to_string_lossy().into_owned()]).unwrap();
-        assert!(locks.is_empty());
+        let dialog_texts = vec![
+            "Операция не может быть завершена, так как эти папка или файл\nоткрыты в другой программе"
+                .into(),
+            "Закройте папку или файл и повторите попытку.".into(),
+            "Фотографии и время (2)".into(),
+            "Дата создания: 27.11.2026 14:43".into(),
+        ];
+        let candidates = extract_candidate_names(&dialog_texts);
+        assert!(candidates.contains(&"Фотографии и время (2)".to_string()));
+        assert!(!candidates.iter().any(|c| c.contains('\n')));
 
-        let _ = fs::remove_dir_all(&dir);
+        let resolved = resolve_locked_path(&candidates, &[PathBuf::from("Z:\\missing"), root.clone()]);
+        assert_eq!(resolved.as_deref(), Some(target.as_path()));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lock_watch_decodes_file_urls_and_formats_prompt() {
+        let decoded = file_url_to_path("file:///D:/1/%D0%A4%D0%BE%D1%82%D0%BE").unwrap();
+        assert!(decoded.to_string_lossy().contains("Фото"));
+        assert!(file_url_to_path("https://example.com").is_none());
+
+        let msg = format_prompt_message(
+            std::path::Path::new(r"D:\1\Фото"),
+            &[
+                LockingProcess {
+                    pid: 1234,
+                    name: "Code.exe".into(),
+                    app_name: "Visual Studio Code".into(),
+                },
+                LockingProcess {
+                    pid: 5678,
+                    name: "python.exe".into(),
+                    app_name: "python.exe".into(),
+                },
+            ],
+        );
+        assert!(msg.contains("Code.exe (Visual Studio Code, PID 1234)"));
+        assert!(msg.contains("python.exe (PID 5678)"));
+        assert!(msg.contains("Закрыть указанные процессы?"));
     }
 }
 

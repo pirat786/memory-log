@@ -174,42 +174,18 @@ function restoreSelect(id, key, fallback) {
   }
 }
 
-function syncDropControls() {
-  const m = $("dropMode").value;
-  $("dropZipMode").hidden = m !== "zip";
-  $("dropMaxDim").hidden = m === "zip" || m === "strip" || m === "locks" || m === "delete";
-  $("dropDeleteAfterRow").hidden = m !== "zip" && m !== "auto";
-  if (m !== "locks" && m !== "delete") $("lockList").hidden = true;
-  $("dropZone").classList.toggle("danger", m === "delete");
-  if (!dropBusy) {
-    $("dropZone").textContent = t(m === "delete" ? "widget.files.drop_delete" : "widget.files.drop_hint");
-  }
-}
-
-restoreSelect("dropMode", "widgetDropMode", "auto");
-restoreSelect("dropMaxDim", "widgetDropMaxDim", "1920");
-restoreSelect("dropZipMode", "widgetDropZipMode", "fast");
-$("dropDeleteAfter").checked = localStorage.getItem("widgetDropDeleteAfter") === "1";
-
-$("dropMode").onchange = () => {
-  localStorage.setItem("widgetDropMode", $("dropMode").value);
-  syncDropControls();
-};
-$("dropMaxDim").onchange = () => {
-  localStorage.setItem("widgetDropMaxDim", $("dropMaxDim").value);
-};
+restoreSelect("dropZipMode", "widgetZipMode", "fast");
 $("dropZipMode").onchange = () => {
-  localStorage.setItem("widgetDropZipMode", $("dropZipMode").value);
+  localStorage.setItem("widgetZipMode", $("dropZipMode").value);
 };
-$("dropDeleteAfter").onchange = () => {
-  localStorage.setItem("widgetDropDeleteAfter", $("dropDeleteAfter").checked ? "1" : "0");
-};
-syncDropControls();
 
 listen("quick-drop-progress", (e) => {
   if (!dropBusy || !e?.payload) return;
-  dropProgress = e.payload;
   const now = Date.now();
+  if (e.payload.total !== dropProgress.total || e.payload.done < dropProgress.done) {
+    resetDropMetrics(now);
+  }
+  dropProgress = e.payload;
   if (!dropLastSample) {
     dropLastSample = { t: now, done: dropProgress.done };
   } else {
@@ -224,109 +200,44 @@ listen("quick-drop-progress", (e) => {
   renderDropProgress();
 });
 
-async function checkLocks(paths) {
-  $("lockList").innerHTML = "";
-  $("lockList").hidden = true;
-  $("dropBar").hidden = true;
-  $("dropCancel").hidden = true;
-  $("dropReveal").hidden = true;
-  $("dropResult").hidden = false;
-  try {
-    const procs = await invoke("who_locks_file", { paths });
-    if (!procs.length) {
-      $("dropSummary").textContent = t("widget.files.lock_free");
-      return;
-    }
-    $("dropSummary").textContent = `${procs.length}`;
-    for (const p of procs) {
-      const row = document.createElement("div");
-      row.className = "lock-row";
-      const label = document.createElement("span");
-      label.textContent = `${p.name} (${p.pid})`;
-      label.title = p.app_name || p.name;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = t("widget.files.lock_kill");
-      btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          await invoke("kill_pid", { pid: p.pid });
-          await checkLocks(paths);
-        } catch (err) {
-          $("dropSummary").textContent = String(err);
-          btn.disabled = false;
-        }
-      };
-      row.append(label, btn);
-      $("lockList").appendChild(row);
-    }
-    $("lockList").hidden = false;
-  } catch (err) {
-    $("dropSummary").textContent = String(err);
-  }
+function formatDropReport(rep) {
+  const saved = rep.input_bytes - rep.output_bytes;
+  const pct = rep.input_bytes > 0 ? Math.round((saved / rep.input_bytes) * 100) : 0;
+  const kind = {
+    "zip-unpack": "result_unpacked",
+    "zip-pack": "result_packed",
+  }[rep.kind];
+  const size = `${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)}`;
+  const savings = rep.kind !== "zip-unpack" && pct !== 0 ? ` (${pct > 0 ? "−" : "+"}${Math.abs(pct)}%)` : "";
+  return `${t(`widget.files.${kind}`)} · ${rep.count} · ${size}${savings} • ${fmtElapsed(rep.elapsed_ms)}`;
 }
 
-function confirmFastDelete(paths) {
-  $("lockList").innerHTML = "";
-  $("dropBar").hidden = true;
-  $("dropCancel").hidden = true;
-  $("dropReveal").hidden = true;
-  $("dropResult").hidden = false;
-  const first = paths[0].split(/[/\\]/).pop() || paths[0];
-  $("dropSummary").textContent = paths.length > 1
-    ? `${t("widget.files.delete_confirm")} (${first} +${paths.length - 1})`
-    : `${t("widget.files.delete_confirm")} (${first})`;
+function showDropReports(reports) {
+  if (reports.length === 1) {
+    const [rep] = reports;
+    $("dropSummary").textContent = formatDropReport(rep);
+    lastDropPath = rep.output_path;
+    $("dropReveal").hidden = !lastDropPath;
+    return;
+  }
 
-  const row = document.createElement("div");
-  row.className = "lock-row";
-  const label = document.createElement("span");
-  label.textContent = paths.join(", ");
-  const delBtn = document.createElement("button");
-  delBtn.type = "button";
-  delBtn.className = "btn-danger";
-  delBtn.textContent = t("widget.files.delete_btn");
-  delBtn.onclick = async () => {
-    $("lockList").hidden = true;
-    dropBusy = true;
-    dropStartedAt = Date.now();
-    dropProgress = { done: 0, total: 0, pct: 0 };
-    resetDropMetrics(dropStartedAt);
-    clearInterval(dropTimer);
-    dropTimer = setInterval(renderDropProgress, 250);
-    $("dropZone").textContent = t("widget.files.processing");
-    $("dropFill").style.width = "0%";
-    $("dropBar").hidden = false;
-    $("dropCancel").disabled = false;
-    $("dropCancel").textContent = t("widget.files.cancel");
-    $("dropCancel").hidden = false;
-    renderDropProgress();
-    try {
-      const rep = await invoke("fast_delete", { paths });
-      const spd = fmtSpeed(rep.input_bytes, rep.elapsed_ms);
-      $("dropSummary").textContent = `${t("widget.files.delete_done")}: ${rep.count} f (${fmtBytes(rep.input_bytes)})${spd ? ` • ${spd}` : ""} • ${fmtElapsed(rep.elapsed_ms)}`;
-    } catch (err) {
-      const msg = String(err);
-      $("dropSummary").textContent = msg.includes("отменено")
-        ? `${t("widget.files.cancelled")} (${fmtElapsed(Date.now() - dropStartedAt)})`
-        : msg;
-    } finally {
-      dropBusy = false;
-      clearInterval(dropTimer);
-      $("dropBar").hidden = true;
-      $("dropCancel").hidden = true;
-      syncDropControls();
+  $("dropResult").hidden = true;
+  for (const rep of reports) {
+    const row = document.createElement("div");
+    row.className = "drop-result";
+    const label = document.createElement("span");
+    label.textContent = formatDropReport(rep);
+    label.title = rep.output_path;
+    row.append(label);
+    if (rep.output_path) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = $("dropReveal").textContent;
+      button.onclick = () => invoke("reveal_path", { path: rep.output_path });
+      row.append(button);
     }
-  };
-  const cancelBtn = document.createElement("button");
-  cancelBtn.type = "button";
-  cancelBtn.textContent = t("widget.files.cancel");
-  cancelBtn.onclick = () => {
-    $("lockList").hidden = true;
-    $("dropResult").hidden = true;
-  };
-  row.append(label, delBtn, cancelBtn);
-  $("lockList").appendChild(row);
-  $("lockList").hidden = false;
+    $("dropOutputs").append(row);
+  }
 }
 
 listen("tauri://drag-drop", async (e) => {
@@ -334,15 +245,8 @@ listen("tauri://drag-drop", async (e) => {
   $("dropZone").classList.remove("over");
   const paths = e?.payload?.paths;
   if (!Array.isArray(paths) || !paths.length || dropBusy) return;
-  if ($("dropMode").value === "locks") {
-    await checkLocks(paths);
-    return;
-  }
-  if ($("dropMode").value === "delete") {
-    confirmFastDelete(paths);
-    return;
-  }
-  $("lockList").hidden = true;
+  $("dropOutputs").replaceChildren();
+  $("dropErrors").textContent = "";
   dropBusy = true;
   dropStartedAt = Date.now();
   dropProgress = { done: 0, total: 0, pct: 0 };
@@ -359,24 +263,12 @@ listen("tauri://drag-drop", async (e) => {
   $("dropCancel").hidden = false;
   $("dropResult").hidden = false;
   try {
-    const rep = await invoke("quick_drop", {
+    const result = await invoke("quick_drop", {
       paths,
-      mode: $("dropMode").value,
-      maxDim: Number($("dropMaxDim").value) || 0,
-      quality: 82,
       zipMode: $("dropZipMode").value,
-      deleteAfter: $("dropDeleteAfter").checked,
     });
-    lastDropPath = rep.output_path;
-    const pct = rep.input_bytes > 0
-      ? Math.round((1 - rep.output_bytes / rep.input_bytes) * 100)
-      : 0;
-    const delta = rep.kind === "zip-unpack"
-      ? `${rep.count} f`
-      : `${fmtBytes(rep.input_bytes)} → ${fmtBytes(rep.output_bytes)} (${pct >= 0 ? `-${pct}%` : `+${-pct}%`})`;
-    const extra = rep.deleted_original ? ` • ${t("widget.files.deleted_original")}` : "";
-    $("dropSummary").textContent = `${delta} • ${fmtElapsed(rep.elapsed_ms)}${extra}`;
-    $("dropReveal").hidden = !lastDropPath;
+    showDropReports(result.reports);
+    $("dropErrors").textContent = result.errors.map((error) => error === "отменено" ? t("widget.files.cancelled") : error).join("\n");
   } catch (err) {
     const msg = String(err);
     $("dropSummary").textContent = msg.includes("отменено")
@@ -403,7 +295,7 @@ $("dropReveal").onclick = () => {
 
 (async () => {
   try { await window.I18N?.init(); } catch {}
-  syncDropControls();
+  $("dropZone").textContent = t("widget.files.drop_hint");
   refreshState();
   try {
     const open = await invoke("pet_open");

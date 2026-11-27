@@ -15,10 +15,13 @@ use super::{
     unique_entry_name, ZipEntryTask, HUGE_BUF_HDD, HUGE_BUF_SSD, SOLID_SMALL_FILE_MAX,
 };
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read, same_drive};
+use crate::quick_files::jxl::{
+    self, CodecManifest, ImageFormat, JxlManifestEntry, CODEC_MANIFEST_NAME, MAX_JXL_INPUT_BYTES,
+};
 use crate::quick_files::{ext_lower, is_cancelled, unique_path, ProgressReporter, QuickFileReport};
 
 const DEFAULT_SOLID_ZSTD_LEVEL: i32 = 12;
-pub const ULTRA_SOLID_ZSTD_LEVEL: i32 = 19;
+const ULTRA_SOLID_ZSTD_LEVEL: i32 = 19;
 const SOLID_FAST_FRAME_LEVEL: i32 = -5;
 const SOLID_BATCH_MAX_FILES: usize = 32;
 const SOLID_BATCH_MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -82,13 +85,29 @@ impl<W: Write> MultiFrameZstdWriter<W> {
 
 impl<W: Write> Write for MultiFrameZstdWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.enc
+        let enc = self
+            .enc
             .as_mut()
-            .ok_or_else(|| io::Error::other("zstd encoder closed"))?
-            .write(buf)
+            .ok_or_else(|| io::Error::other("zstd encoder closed"))?;
+        let mut off = 0;
+        while off < buf.len() {
+            if is_cancelled() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "отменено"));
+            }
+            let end = (off + 64 * 1024).min(buf.len());
+            let n = enc.write(&buf[off..end])?;
+            if n == 0 {
+                break;
+            }
+            off += n;
+        }
+        Ok(off)
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        if is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "отменено"));
+        }
         self.enc
             .as_mut()
             .ok_or_else(|| io::Error::other("zstd encoder closed"))?
@@ -306,13 +325,78 @@ fn append_solid_task_stream<W: Write>(
     Ok(())
 }
 
-pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
-    pack_solid_with_level(paths, DEFAULT_SOLID_ZSTD_LEVEL, app)
+enum JxlOutcome {
+    Encoded {
+        task: ZipEntryTask,
+        format: ImageFormat,
+        jxl_bytes: Vec<u8>,
+    },
+    Fallback(ZipEntryTask),
 }
 
-pub fn pack_solid_with_level(
+fn encode_jxl_batch(batch: Vec<(ZipEntryTask, ImageFormat)>) -> Result<Vec<JxlOutcome>, String> {
+    let workers = 4.min(batch.len().max(1));
+    let next_idx = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<JxlOutcome>>> = (0..batch.len()).map(|_| Mutex::new(None)).collect();
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let batch_ref = &batch;
+            let idx_ref = &next_idx;
+            let slots_ref = &slots;
+            s.spawn(move || loop {
+                if is_cancelled() {
+                    break;
+                }
+                let i = idx_ref.fetch_add(1, Ordering::Relaxed);
+                if i >= batch_ref.len() {
+                    break;
+                }
+                let (ref task, format) = batch_ref[i];
+                let outcome = match jxl::encode_file_to_jxl(&task.path, format, 2) {
+                    Ok(jxl_bytes) if (jxl_bytes.len() as u64) < task.len => JxlOutcome::Encoded {
+                        task: ZipEntryTask {
+                            path: task.path.clone(),
+                            zip_name: task.zip_name.clone(),
+                            len: task.len,
+                            mtime: task.mtime,
+                        },
+                        format,
+                        jxl_bytes,
+                    },
+                    _ => JxlOutcome::Fallback(ZipEntryTask {
+                        path: task.path.clone(),
+                        zip_name: task.zip_name.clone(),
+                        len: task.len,
+                        mtime: task.mtime,
+                    }),
+                };
+                *slots_ref[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+            });
+        }
+    });
+
+    if is_cancelled() {
+        return Err("отменено".into());
+    }
+    Ok(slots
+        .into_iter()
+        .filter_map(|slot| slot.into_inner().unwrap_or_else(|e| e.into_inner()))
+        .collect())
+}
+
+pub fn pack_solid(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    pack_solid_internal(paths, DEFAULT_SOLID_ZSTD_LEVEL, false, app)
+}
+
+pub fn pack_solid_ultra(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    pack_solid_internal(paths, ULTRA_SOLID_ZSTD_LEVEL, true, app)
+}
+
+fn pack_solid_internal(
     paths: Vec<String>,
     default_level: i32,
+    use_jxl: bool,
     app: Option<&AppHandle>,
 ) -> Result<QuickFileReport, String> {
     let started = Instant::now();
@@ -360,6 +444,11 @@ pub fn pack_solid_with_level(
     let mut seen_dirs: Vec<(PathBuf, String)> = Vec::new();
     let mut has_children: HashSet<PathBuf> = HashSet::new();
     let mut used_names: HashSet<String> = HashSet::new();
+    let jxl_enabled = use_jxl && jxl::is_available();
+    if jxl_enabled {
+        used_names.insert(CODEC_MANIFEST_NAME.to_string());
+    }
+    let mut jxl_manifest: Vec<JxlManifestEntry> = Vec::new();
 
     for root in &valid {
         if is_cancelled() {
@@ -443,6 +532,9 @@ pub fn pack_solid_with_level(
         let mut comp = Vec::new();
         let mut incomp = Vec::new();
         for t in entries {
+            if is_cancelled() {
+                return Err("отменено".into());
+            }
             let is_comp = if hdd_mode {
                 !is_incompressible_ext(&ext_lower(&t.path))
             } else {
@@ -531,6 +623,88 @@ pub fn pack_solid_with_level(
                     .get_mut()
                     .switch_frame(SOLID_FAST_FRAME_LEVEL, workers as u32, false)
                     .map_err(|e| format!("ошибка переключения фрейма Zstd: {e}"))?;
+            }
+            let group = if jxl_enabled {
+                let mut jxl_tasks: Vec<(ZipEntryTask, ImageFormat)> = Vec::new();
+                let mut normal_tasks: Vec<ZipEntryTask> = Vec::with_capacity(group.len());
+                for task in group {
+                    if task.len > 0 && task.len <= MAX_JXL_INPUT_BYTES {
+                        if let Some(format) = jxl::detect_image_format(&task.path) {
+                            jxl_tasks.push((task, format));
+                            continue;
+                        }
+                    }
+                    normal_tasks.push(task);
+                }
+                for chunk in jxl_tasks.chunks(8) {
+                    if is_cancelled() {
+                        return Err("отменено".into());
+                    }
+                    let batch: Vec<(ZipEntryTask, ImageFormat)> = chunk
+                        .iter()
+                        .map(|(t, fmt)| {
+                            (
+                                ZipEntryTask {
+                                    path: t.path.clone(),
+                                    zip_name: t.zip_name.clone(),
+                                    len: t.len,
+                                    mtime: t.mtime,
+                                },
+                                *fmt,
+                            )
+                        })
+                        .collect();
+                    for outcome in encode_jxl_batch(batch)? {
+                        match outcome {
+                            JxlOutcome::Encoded {
+                                task,
+                                format,
+                                jxl_bytes,
+                            } => {
+                                if is_cancelled() {
+                                    return Err("отменено".into());
+                                }
+                                let stored_name = unique_entry_name(
+                                    &mut used_names,
+                                    format!("{}.jxl", task.zip_name),
+                                );
+                                let mut header = tar::Header::new_gnu();
+                                if let Ok(meta) = fs::metadata(&task.path) {
+                                    header.set_metadata(&meta);
+                                } else {
+                                    header.set_mode(0o644);
+                                }
+                                header.set_size(jxl_bytes.len() as u64);
+                                header.set_cksum();
+                                builder
+                                    .append_data(&mut header, &stored_name, &jxl_bytes[..])
+                                    .map_err(|e| format!("ошибка упаковки {stored_name}: {e}"))?;
+                                jxl_manifest.push(JxlManifestEntry {
+                                    stored: stored_name,
+                                    original: task.zip_name,
+                                    format: format.as_str().to_string(),
+                                });
+                                total_in += task.len;
+                                count += 1;
+                                progress.add(task.len);
+                                maybe_log_solid_pack(
+                                    total_in,
+                                    total_expected,
+                                    started,
+                                    &mut last_log,
+                                    &mut last_log_bytes,
+                                );
+                            }
+                            JxlOutcome::Fallback(task) => normal_tasks.push(task),
+                        }
+                    }
+                }
+                normal_tasks
+            } else {
+                group
+            };
+            if group.is_empty() {
+                continue;
             }
             if !hdd_mode && group.len() >= 16 {
                 let (tx, rx) = mpsc::sync_channel::<Result<SolidBatch, String>>(2);
@@ -661,12 +835,35 @@ pub fn pack_solid_with_level(
                 .append_data(&mut header, dir_name, io::empty())
                 .map_err(|e| format!("ошибка добавления папки {dir_name}: {e}"))?;
         }
+        if !jxl_manifest.is_empty() {
+            let manifest_bytes = serde_json::to_vec(&CodecManifest {
+                v: 1,
+                jxl: jxl_manifest,
+            })
+            .map_err(|e| format!("ошибка сериализации манифеста кодеков: {e}"))?;
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(manifest_bytes.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, CODEC_MANIFEST_NAME, &manifest_bytes[..])
+                .map_err(|e| format!("ошибка добавления манифеста кодеков: {e}"))?;
+        }
         Ok(())
     })();
 
     if let Err(err) = res {
-        drop(builder);
-        let _ = fs::remove_file(&out_path);
+        if is_cancelled() {
+            let _ = std::thread::Builder::new()
+                .name("solid-cancel-cleanup".into())
+                .spawn(move || {
+                    drop(builder);
+                    let _ = fs::remove_file(&out_path);
+                });
+        } else {
+            drop(builder);
+            let _ = fs::remove_file(&out_path);
+        }
         return Err(err);
     }
 

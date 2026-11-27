@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
@@ -14,6 +14,9 @@ use super::{
     check_free_space, detect_hdd_mode, SOLID_SMALL_FILE_MAX, UNPACK_BUF_HDD, UNPACK_BUF_SSD,
 };
 use crate::quick_files::io_hints::{create_sequential_write, open_sequential_read};
+use crate::quick_files::jxl::{
+    self, CodecManifest, ImageFormat, CODEC_MANIFEST_NAME, MAX_CODEC_MANIFEST_BYTES,
+};
 use crate::quick_files::{is_cancelled, unique_path, ProgressReporter, QuickFileReport};
 
 const SOLID_UNPACK_QUEUE_MAX: usize = 32;
@@ -33,11 +36,21 @@ impl<R: Read> Read for CountingReader<R> {
     }
 }
 
-fn sanitize_rel_path(rel: &Path) -> Option<PathBuf> {
+pub(super) fn sanitize_rel_path(rel: &Path) -> Option<PathBuf> {
     let mut clean = PathBuf::new();
     for comp in rel.components() {
         match comp {
-            Component::Normal(part) => clean.push(part),
+            Component::Normal(part) => {
+                let name = part.to_string_lossy();
+                let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+                let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+                    || stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT"))
+                        .is_some_and(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"));
+                if device || name.contains([':', '\\', '<', '>', '"', '|', '?', '*']) || name.ends_with(['.', ' ']) {
+                    return None;
+                }
+                clean.push(part);
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
         }
@@ -66,6 +79,101 @@ fn strip_archive_stem(path: &Path) -> String {
         .to_string()
 }
 
+fn read_codec_manifest<R: Read>(entry: R) -> Result<CodecManifest, String> {
+    let mut data = Vec::new();
+    entry
+        .take(MAX_CODEC_MANIFEST_BYTES as u64 + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| format!("ошибка чтения манифеста кодеков: {e}"))?;
+    if data.len() > MAX_CODEC_MANIFEST_BYTES {
+        return Err("слишком большой манифест кодеков".into());
+    }
+    let manifest: CodecManifest = serde_json::from_slice(&data)
+        .map_err(|e| format!("повреждённый манифест кодеков: {e}"))?;
+    if manifest.v != 1 {
+        return Err(format!("неподдерживаемая версия манифеста кодеков: {}", manifest.v));
+    }
+    Ok(manifest)
+}
+
+fn restore_jxl_entries(
+    out_dir: &Path,
+    manifest: CodecManifest,
+    output_bytes: &mut u64,
+) -> Result<(), String> {
+    if manifest.jxl.is_empty() {
+        return Ok(());
+    }
+    let mut tasks = Vec::with_capacity(manifest.jxl.len());
+    for entry in manifest.jxl {
+        let stored = sanitize_rel_path(Path::new(&entry.stored))
+            .ok_or_else(|| format!("небезопасный путь в манифесте кодеков: {}", entry.stored))?;
+        let original = sanitize_rel_path(Path::new(&entry.original))
+            .ok_or_else(|| format!("небезопасный путь в манифесте кодеков: {}", entry.original))?;
+        let format = ImageFormat::from_str(&entry.format)
+            .ok_or_else(|| format!("неизвестный формат в манифесте кодеков: {}", entry.format))?;
+        tasks.push((out_dir.join(stored), out_dir.join(original), format));
+    }
+
+    let workers = 4.min(tasks.len());
+    let next_idx = AtomicUsize::new(0);
+    let total_jxl = AtomicU64::new(0);
+    let total_restored = AtomicU64::new(0);
+    let first_err: Mutex<Option<String>> = Mutex::new(None);
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            let tasks_ref = &tasks;
+            let idx_ref = &next_idx;
+            let jxl_ref = &total_jxl;
+            let res_ref = &total_restored;
+            let err_ref = &first_err;
+            s.spawn(move || loop {
+                if is_cancelled() || err_ref.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                    break;
+                }
+                let i = idx_ref.fetch_add(1, Ordering::Relaxed);
+                if i >= tasks_ref.len() {
+                    break;
+                }
+                let (ref src_jxl, ref dst_orig, format) = tasks_ref[i];
+                let jxl_len = fs::metadata(src_jxl).map(|m| m.len()).unwrap_or(0);
+                match jxl::decode_jxl_to_file(src_jxl, dst_orig, format, 2) {
+                    Ok(restored_len) => {
+                        if let Err(e) = fs::remove_file(src_jxl) {
+                            let mut g = err_ref.lock().unwrap_or_else(|e| e.into_inner());
+                            if g.is_none() {
+                                *g = Some(format!("ошибка удаления {}: {e}", src_jxl.display()));
+                            }
+                            break;
+                        }
+                        jxl_ref.fetch_add(jxl_len, Ordering::Relaxed);
+                        res_ref.fetch_add(restored_len, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        let mut g = err_ref.lock().unwrap_or_else(|e| e.into_inner());
+                        if g.is_none() {
+                            *g = Some(e);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_err.into_inner().unwrap_or_else(|e| e.into_inner()) {
+        return Err(e);
+    }
+    if is_cancelled() {
+        return Err("отменено".into());
+    }
+    *output_bytes = output_bytes
+        .saturating_sub(total_jxl.load(Ordering::Relaxed))
+        .saturating_add(total_restored.load(Ordering::Relaxed));
+    Ok(())
+}
+
 fn extract_tar_stream<R: Read>(
     label: &str,
     path: &Path,
@@ -85,6 +193,7 @@ fn extract_tar_stream<R: Read>(
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
     created_dirs.insert(out_dir.to_path_buf());
     let mut buf = vec![0u8; buf_size];
+    let mut codec_manifest: Option<CodecManifest> = None;
 
     let res: Result<(), String> = if !hdd_mode {
         let queue = BoundedQueue::<(PathBuf, Vec<u8>)>::new(SOLID_UNPACK_QUEUE_MAX);
@@ -96,6 +205,7 @@ fn extract_tar_stream<R: Read>(
         let buf_ref = &mut buf;
         let cnt_ref = &mut count;
         let out_bytes_ref = &mut output_bytes;
+        let manifest_ref = &mut codec_manifest;
 
         let scope_res = std::thread::scope(|s| -> Result<(), String> {
             for _ in 0..4 {
@@ -161,7 +271,7 @@ fn extract_tar_stream<R: Read>(
                     let Some(clean_rel) = sanitize_rel_path(&rel_raw) else {
                         continue;
                     };
-                    let out_path = out_dir.join(clean_rel);
+                    let out_path = out_dir.join(&clean_rel);
                     let kind = entry.header().entry_type();
                     if kind.is_dir() {
                         if dirs_ref.insert(out_path.clone()) {
@@ -171,6 +281,13 @@ fn extract_tar_stream<R: Read>(
                         continue;
                     }
                     if !kind.is_file() {
+                        continue;
+                    }
+                    if clean_rel == Path::new(CODEC_MANIFEST_NAME) {
+                        if manifest_ref.is_some() {
+                            return Err("дублирующийся манифест кодеков".into());
+                        }
+                        *manifest_ref = Some(read_codec_manifest(entry)?);
                         continue;
                     }
                     if let Some(p) = out_path.parent() {
@@ -259,7 +376,7 @@ fn extract_tar_stream<R: Read>(
                 let Some(clean_rel) = sanitize_rel_path(&rel_raw) else {
                     continue;
                 };
-                let out_path = out_dir.join(clean_rel);
+                let out_path = out_dir.join(&clean_rel);
                 let kind = entry.header().entry_type();
                 if kind.is_dir() {
                     if created_dirs.insert(out_path.clone()) {
@@ -269,6 +386,13 @@ fn extract_tar_stream<R: Read>(
                     continue;
                 }
                 if !kind.is_file() {
+                    continue;
+                }
+                if clean_rel == Path::new(CODEC_MANIFEST_NAME) {
+                    if codec_manifest.is_some() {
+                        return Err("дублирующийся манифест кодеков".into());
+                    }
+                    codec_manifest = Some(read_codec_manifest(entry)?);
                     continue;
                 }
                 if let Some(p) = out_path.parent() {
@@ -309,6 +433,13 @@ fn extract_tar_stream<R: Read>(
         drop(archive);
         let _ = fs::remove_dir_all(out_dir);
         return Err(err);
+    }
+    drop(archive);
+    if let Some(manifest) = codec_manifest {
+        if let Err(err) = restore_jxl_entries(out_dir, manifest, &mut output_bytes) {
+            let _ = fs::remove_dir_all(out_dir);
+            return Err(err);
+        }
     }
     progress.set(input_bytes);
 
@@ -401,6 +532,18 @@ pub fn unpack_tar_gz(
     archive_path: String,
     app: Option<&AppHandle>,
 ) -> Result<QuickFileReport, String> {
+    unpack_tar_file(archive_path, true, app)
+}
+
+pub fn unpack_tar(archive_path: String, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    unpack_tar_file(archive_path, false, app)
+}
+
+fn unpack_tar_file(
+    archive_path: String,
+    gzip: bool,
+    app: Option<&AppHandle>,
+) -> Result<QuickFileReport, String> {
     let started = Instant::now();
     let path = PathBuf::from(&archive_path);
     if !path.is_file() {
@@ -422,8 +565,9 @@ pub fn unpack_tar_gz(
     } else {
         UNPACK_BUF_SSD
     };
+    let label = if gzip { "targz-unpack" } else { "tar-unpack" };
     crate::log::info(&format!(
-        "targz-unpack start: archive={}, in={:.1} MB, hdd={}, out={}",
+        "{label} start: archive={}, in={:.1} MB, hdd={}, out={}",
         path.display(),
         input_bytes as f64 / 1_048_576.0,
         hdd_mode,
@@ -437,15 +581,15 @@ pub fn unpack_tar_gz(
         inner: BufReader::with_capacity(buf_size, file),
         bytes: Arc::clone(&counter),
     };
-    let decoder = GzDecoder::new(counting);
+    let stream: Box<dyn Read + Send> = if gzip { Box::new(GzDecoder::new(counting)) } else { Box::new(counting) };
     extract_tar_stream(
-        "targz-unpack",
+        label,
         &path,
         input_bytes,
         &out_dir,
         hdd_mode,
         buf_size,
-        decoder,
+        stream,
         counter,
         started,
         app,

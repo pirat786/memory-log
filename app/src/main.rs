@@ -132,6 +132,7 @@ fn main() {
             let state = Arc::new(AppState::open(&dir.join("memory-log.db"), app.path().download_dir().ok())?);
             collector_loop::spawn(state.clone());
             cloud::spawn(state.clone());
+            sys_tools::spawn_lock_watch();
             tray::build(app, state.clone())?;
             let restore_widget = state.widget_enabled();
             let restore_pet = state.pet_enabled();
@@ -219,9 +220,6 @@ fn main() {
             commands::pet_move,
             commands::quick_drop,
             commands::quick_drop_cancel,
-            commands::fast_delete,
-            commands::who_locks_file,
-            commands::kill_pid,
             commands::get_layout_fix,
             commands::set_layout_fix,
         ])

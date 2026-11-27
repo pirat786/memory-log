@@ -1,13 +1,15 @@
 mod bg_writer;
 mod pack;
 mod parallel;
+mod extra_unpack;
 mod solid_pack;
 mod solid_unpack;
 mod unpack;
 
 pub use pack::pack_zip;
-pub use solid_pack::{pack_solid, pack_solid_with_level, ULTRA_SOLID_ZSTD_LEVEL};
-pub use solid_unpack::{unpack_gz, unpack_solid, unpack_tar_gz};
+pub use extra_unpack::{unpack_rar, unpack_sevenz};
+pub use solid_pack::{pack_solid, pack_solid_ultra};
+pub use solid_unpack::{unpack_gz, unpack_solid, unpack_tar, unpack_tar_gz};
 pub use unpack::unpack_zip;
 
 use std::collections::HashSet;

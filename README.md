@@ -92,6 +92,8 @@ cargo build --release --manifest-path app/Cargo.toml --features tauri/custom-pro
 For an installer or dev mode install the Tauri CLI (`cargo install tauri-cli --version "^2"`), then use
 `cd app && cargo tauri dev` or `cd app && cargo tauri build`. Icons: `cd app && cargo tauri icon path/to/image.png`.
 
+The widget's Ultra (`.tar.zst`) compression level transparently encodes PNG and JPEG files with lossless JPEG XL when it saves space, and restores the original PNG/JPEG files on extraction. Windows release installers include the JPEG XL tools. For a local release build, run `./tools/prepare-jpeg-xl.ps1` from the repository root and keep the resulting `codecs` folder beside `memory-log.exe`.
+
 ## Project layout
 
 ```

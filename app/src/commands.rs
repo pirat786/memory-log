@@ -8,7 +8,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::state::{AppState, Status};
 use crate::cloud::{self, SyncStatus};
-use crate::sys_tools::{self, CleanResult, JunkCategory, ListeningPort, PowerStatus, StartupItem};
+use crate::sys_tools::{CleanResult, JunkCategory, ListeningPort, PowerStatus, StartupItem};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -395,20 +395,12 @@ pub fn set_layout_fix(state: Shared, enabled: bool) -> bool {
 pub async fn quick_drop(
     app: AppHandle,
     paths: Vec<String>,
-    mode: String,
-    max_dim: u32,
-    quality: u8,
     zip_mode: Option<String>,
-    delete_after: Option<bool>,
-) -> Result<crate::quick_files::QuickFileReport, String> {
+) -> Result<crate::quick_files::QuickDropResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::quick_files::handle_drop(
+        crate::quick_files::handle_archive_drop(
             paths,
-            &mode,
-            max_dim,
-            quality,
             zip_mode.as_deref().unwrap_or("fast"),
-            delete_after.unwrap_or(false),
             Some(&app),
         )
     })
@@ -419,26 +411,4 @@ pub async fn quick_drop(
 #[tauri::command]
 pub fn quick_drop_cancel() {
     crate::quick_files::cancel_drop();
-}
-
-#[tauri::command]
-pub async fn fast_delete(
-    app: AppHandle,
-    paths: Vec<String>,
-) -> Result<crate::quick_files::QuickFileReport, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::quick_files::fast_delete(paths, Some(&app)))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn who_locks_file(paths: Vec<String>) -> Result<Vec<sys_tools::LockingProcess>, String> {
-    tauri::async_runtime::spawn_blocking(move || sys_tools::who_locks_paths(&paths))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn kill_pid(pid: u32) -> Result<(), String> {
-    sys_tools::kill_pid(pid)
 }

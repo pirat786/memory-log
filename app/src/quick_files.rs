@@ -1,18 +1,15 @@
-pub mod images;
 pub mod io_hints;
+mod jxl;
 pub mod zip_ops;
 
 use std::fs;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
-use walkdir::WalkDir;
-
-pub(crate) const IO_BUF_SIZE: usize = 2 * 1024 * 1024;
 
 static CANCEL_DROP: AtomicBool = AtomicBool::new(false);
 
@@ -34,6 +31,22 @@ pub struct QuickFileReport {
     pub elapsed_ms: u128,
     pub detail: String,
     pub deleted_original: bool,
+}
+
+#[derive(Default, Serialize)]
+pub struct QuickDropResult {
+    pub reports: Vec<QuickFileReport>,
+    pub errors: Vec<String>,
+}
+
+impl QuickDropResult {
+    fn record(&mut self, result: Result<QuickFileReport, String>) {
+        match result {
+            Ok(report) => self.reports.push(report),
+            Err(error) if !is_cancelled() => self.errors.push(error),
+            Err(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,13 +137,11 @@ pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-pub use images::process_images;
-#[cfg(test)]
-pub use zip_ops::{pack_solid, pack_zip, unpack_solid, unpack_zip};
+pub use zip_ops::{pack_solid, pack_solid_ultra, pack_zip, unpack_solid, unpack_zip};
 #[cfg(test)]
 pub(crate) use zip_ops::check_free_space;
 
-fn archive_kind(path: &Path) -> Option<&'static str> {
+fn archive_kind_from_name(path: &Path) -> Option<&'static str> {
     let lower = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -144,258 +155,140 @@ fn archive_kind(path: &Path) -> Option<&'static str> {
         Some("tar_gz")
     } else if lower.ends_with(".gz") {
         Some("gz")
+    } else if lower.ends_with(".7z") {
+        Some("7z")
+    } else if lower.ends_with(".rar") {
+        Some("rar")
+    } else if lower.ends_with(".tar") {
+        Some("tar")
+    } else if matches!(ext_lower(path).as_str(), "xz" | "bz2" | "zst" | "zipx") {
+        Some("unsupported")
     } else {
         None
     }
 }
 
-fn unpack_one(path: String, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
-    match archive_kind(Path::new(&path)) {
-        Some("zip") => zip_ops::unpack_zip(path, app),
-        Some("tar_zst") => zip_ops::unpack_solid(path, app),
-        Some("tar_gz") => zip_ops::unpack_tar_gz(path, app),
-        Some("gz") => zip_ops::unpack_gz(path, app),
+fn has_tar_header(data: &[u8]) -> bool {
+    data.get(257..262) == Some(b"ustar")
+}
+
+fn is_zip_based_format(path: &Path) -> bool {
+    matches!(ext_lower(path).as_str(),
+        "docx" | "docm" | "dotx" | "dotm" | "xlsx" | "xlsm" | "xlsb" | "xltx" | "xltm"
+        | "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "sldx" | "sldm"
+        | "odt" | "ods" | "odp" | "odg" | "odf" | "ott" | "ots" | "otp"
+        | "epub" | "cbz" | "apk" | "aab" | "ipa" | "jar" | "war" | "ear" | "xpi" | "vsix"
+        | "nupkg" | "whl" | "npz" | "kmz" | "ora" | "kra" | "3mf" | "usdz"
+        | "pages" | "numbers" | "key" | "pkpass" | "sb3"
+    )
+}
+
+fn archive_kind_from_content(path: &Path, name_hint: Option<&str>) -> Option<&'static str> {
+    let mut data = [0; 512];
+    let mut file = fs::File::open(path).ok()?;
+    let mut prefix = Vec::with_capacity(512);
+    file.by_ref().take(512).read_to_end(&mut prefix).ok()?;
+    if [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"].iter().any(|magic| prefix.starts_with(*magic)) {
+        return (!is_zip_based_format(path)).then_some("zip");
+    }
+    if prefix.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        return Some("7z");
+    }
+    if prefix.starts_with(b"Rar!\x1A\x07\x00") || prefix.starts_with(b"Rar!\x1A\x07\x01\x00") {
+        return Some("rar");
+    }
+    if has_tar_header(&prefix) {
+        return Some("tar");
+    }
+    if prefix.starts_with(b"\x1F\x8B") {
+        if ext_lower(path) == "svgz" {
+            return None;
+        }
+        file.rewind().ok()?;
+        let tar = name_hint == Some("tar_gz")
+            || (flate2::read::GzDecoder::new(file.take(65_536)).read_exact(&mut data).is_ok() && has_tar_header(&data));
+        return Some(if tar { "tar_gz" } else { "gz" });
+    }
+    if prefix.starts_with(b"\x28\xB5\x2F\xFD") {
+        if name_hint == Some("tar_zst") {
+            return Some("tar_zst");
+        }
+        file.rewind().ok()?;
+        let mut decoder = zstd::stream::read::Decoder::new(file.take(65_536)).ok()?;
+        decoder.window_log_max(26).ok()?;
+        let tar = decoder.read_exact(&mut data).is_ok() && has_tar_header(&data);
+        return Some(if tar { "tar_zst" } else { "unsupported" });
+    }
+    if prefix.starts_with(b"\xFD7zXZ\x00") || prefix.starts_with(b"BZh") {
+        return Some("unsupported");
+    }
+    None
+}
+
+fn archive_kind(path: &Path) -> Option<&'static str> {
+    let name = archive_kind_from_name(path);
+    archive_kind_from_content(path, name).or(name)
+}
+
+fn unpack_one(path: String, kind: &str, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    match kind {
+        "zip" => zip_ops::unpack_zip(path, app),
+        "tar_zst" => zip_ops::unpack_solid(path, app),
+        "tar_gz" => zip_ops::unpack_tar_gz(path, app),
+        "gz" => zip_ops::unpack_gz(path, app),
+        "tar" => zip_ops::unpack_tar(path, app),
+        "7z" => zip_ops::unpack_sevenz(path, app),
+        "rar" => zip_ops::unpack_rar(path, app),
         _ => Err(format!("неподдерживаемый архив: {path}")),
     }
 }
 
-fn unpack_batch(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
-    let started = Instant::now();
-    let total_archives = paths.len();
-    let mut first_out = String::new();
-    let mut total_count = 0usize;
-    let mut total_in = 0u64;
-    let mut total_out = 0u64;
-
-    for p in paths {
-        if is_cancelled() {
-            return Err("отменено".into());
-        }
-        let rep = unpack_one(p, app)?;
-        if first_out.is_empty() {
-            first_out = rep.output_path;
-        }
-        total_count += rep.count;
-        total_in = total_in.saturating_add(rep.input_bytes);
-        total_out = total_out.saturating_add(rep.output_bytes);
-    }
-
-    Ok(QuickFileReport {
-        kind: "zip-unpack".into(),
-        output_path: first_out,
-        count: total_count,
-        input_bytes: total_in,
-        output_bytes: total_out,
-        elapsed_ms: started.elapsed().as_millis(),
-        detail: format!("{total_archives} arch"),
-        deleted_original: false,
-    })
-}
-
-pub fn handle_drop(
+pub fn handle_archive_drop(
     paths: Vec<String>,
-    mode: &str,
-    max_dim: u32,
-    quality: u8,
     zip_mode: &str,
-    delete_after: bool,
     app: Option<&AppHandle>,
-) -> Result<QuickFileReport, String> {
+) -> Result<QuickDropResult, String> {
     CANCEL_DROP.store(false, Ordering::Relaxed);
     if paths.is_empty() {
         return Err("список файлов пуст".into());
     }
-    if mode == "zip" {
-        return pack_and_maybe_delete(paths, zip_mode, delete_after, app);
-    }
-    if matches!(mode, "compress" | "webp" | "jpg" | "jpeg" | "strip") {
-        return images::process_images(paths, mode, max_dim, quality, app);
-    }
-    let all_archives = mode == "auto"
-        && paths.iter().all(|raw| {
-            let p = Path::new(raw);
-            p.is_file() && archive_kind(p).is_some()
-        });
-    if all_archives {
-        if paths.len() == 1 {
-            return unpack_one(paths.into_iter().next().unwrap(), app);
-        }
-        return unpack_batch(paths, app);
-    }
-    let all_images = paths.iter().all(|raw| {
-        let p = Path::new(raw);
-        (p.is_file() && images::is_image_ext(&ext_lower(p)))
-            || (p.is_dir() && images::dir_has_only_images(p))
-    });
-    if all_images {
-        let img_mode = if mode == "auto" { "compress" } else { mode };
-        return images::process_images(paths, img_mode, max_dim, quality, app);
-    }
-    pack_and_maybe_delete(paths, zip_mode, delete_after, app)
-}
-
-fn pack_and_maybe_delete(
-    paths: Vec<String>,
-    zip_mode: &str,
-    delete_after: bool,
-    app: Option<&AppHandle>,
-) -> Result<QuickFileReport, String> {
-    let orig_paths = if delete_after { Some(paths.clone()) } else { None };
-    let mut rep = match zip_mode {
-        "solid" => zip_ops::pack_solid(paths, app)?,
-        "ultra" => zip_ops::pack_solid_with_level(paths, zip_ops::ULTRA_SOLID_ZSTD_LEVEL, app)?,
-        _ => zip_ops::pack_zip(paths, zip_mode, app)?,
-    };
-    if let Some(orig) = orig_paths {
-        if rep.kind == "zip-pack"
-            && rep.output_bytes > 0
-            && Path::new(&rep.output_path).is_file()
-            && !is_cancelled()
-        {
-            if let Ok(del) = fast_delete(orig, None) {
-                rep.deleted_original = true;
-                crate::log::info(&format!(
-                    "zip-pack deleted original: files={}, bytes={}",
-                    del.count, del.input_bytes
-                ));
-            }
-        }
-    }
-    Ok(rep)
-}
-
-fn is_unsafe_delete_target(p: &Path) -> bool {
-    let norm = fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    if norm.parent().is_none() {
-        return true;
-    }
-    let s = norm.to_string_lossy().to_ascii_lowercase();
-    let trimmed = s.trim_start_matches(r"\\?\").trim_end_matches('\\');
-    if trimmed.len() <= 3 {
-        return true;
-    }
-    for env_key in ["USERPROFILE", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(val) = std::env::var_os(env_key) {
-            let env_norm = val.to_string_lossy().to_ascii_lowercase();
-            if trimmed == env_norm.trim_end_matches('\\') {
-                return true;
-            }
-        }
-    }
-    matches!(trimmed, r"c:\users" | r"c:\windows")
-}
-
-pub fn fast_delete(paths: Vec<String>, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
-    CANCEL_DROP.store(false, Ordering::Relaxed);
-    let started = Instant::now();
-    if paths.is_empty() {
-        return Err("нечего удалять".into());
-    }
-
-    let targets: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    for p in &targets {
-        if p.exists() && is_unsafe_delete_target(p) {
-            return Err(format!("защищённый путь: {}", p.display()));
-        }
-    }
-
-    let mut files: Vec<(PathBuf, u64)> = Vec::new();
-    let mut dirs: Vec<PathBuf> = Vec::new();
-
-    for p in &targets {
+    let mut archives = Vec::new();
+    let mut to_pack = Vec::new();
+    for raw in paths {
         if is_cancelled() {
             return Err("отменено".into());
         }
-        if p.is_file() {
-            let len = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-            files.push((p.clone(), len));
-        } else if p.is_dir() {
-            for entry in WalkDir::new(p).contents_first(true).into_iter().flatten() {
-                if is_cancelled() {
-                    return Err("отменено".into());
-                }
-                let ep = entry.path();
-                if entry.file_type().is_dir() {
-                    dirs.push(ep.to_path_buf());
-                } else {
-                    let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    files.push((ep.to_path_buf(), len));
-                }
+        let path = Path::new(&raw);
+        if path.is_file() {
+            match archive_kind(path) {
+                Some(kind) => archives.push((raw, kind)),
+                None => to_pack.push(raw),
             }
+        } else {
+            to_pack.push(raw);
         }
     }
 
-    let total_bytes: u64 = files.iter().map(|(_, len)| *len).sum();
-    let mut progress = ProgressReporter::new(app, total_bytes);
-    let deleted_files = AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get().clamp(2, 8))
-        .unwrap_or(4);
-
-    if files.len() > 32 {
-        let next_idx = AtomicUsize::new(0);
-        let total_files = files.len();
-        let (tx, rx) = mpsc::channel::<u64>();
-        std::thread::scope(|s| {
-            for _ in 0..workers {
-                let files_ref = &files;
-                let idx_ref = &next_idx;
-                let del_ref = &deleted_files;
-                let tx_ref = tx.clone();
-                s.spawn(move || loop {
-                    if is_cancelled() {
-                        break;
-                    }
-                    let i = idx_ref.fetch_add(1, Ordering::Relaxed);
-                    if i >= total_files {
-                        break;
-                    }
-                    let (ref path, len) = files_ref[i];
-                    if fs::remove_file(path).is_ok() {
-                        del_ref.fetch_add(1, Ordering::Relaxed);
-                        let _ = tx_ref.send(len);
-                    }
-                });
-            }
-            drop(tx);
-            while let Ok(bytes) = rx.recv() {
-                progress.add(bytes);
-            }
-        });
-    } else {
-        for (path, len) in &files {
-            if is_cancelled() {
-                return Err("отменено".into());
-            }
-            if fs::remove_file(path).is_ok() {
-                deleted_files.fetch_add(1, Ordering::Relaxed);
-                progress.add(*len);
-            }
+    let mut result = QuickDropResult::default();
+    for (archive, kind) in archives {
+        if is_cancelled() {
+            break;
         }
+        result.record(unpack_one(archive, kind, app));
     }
-
+    if !to_pack.is_empty() && !is_cancelled() {
+        result.record(pack_archive(to_pack, zip_mode, app));
+    }
     if is_cancelled() {
-        return Err("отменено".into());
+        result.errors.push("отменено".into());
     }
+    Ok(result)
+}
 
-    for d in &dirs {
-        let _ = fs::remove_dir(d);
+fn pack_archive(paths: Vec<String>, zip_mode: &str, app: Option<&AppHandle>) -> Result<QuickFileReport, String> {
+    match zip_mode {
+        "solid" => zip_ops::pack_solid(paths, app),
+        "ultra" => zip_ops::pack_solid_ultra(paths, app),
+        _ => zip_ops::pack_zip(paths, zip_mode, app),
     }
-    for p in &targets {
-        if p.is_dir() && p.exists() {
-            let _ = fs::remove_dir_all(p);
-        }
-    }
-
-    let count = deleted_files.load(Ordering::Relaxed);
-    Ok(QuickFileReport {
-        kind: "delete".into(),
-        output_path: String::new(),
-        count,
-        input_bytes: total_bytes,
-        output_bytes: 0,
-        elapsed_ms: started.elapsed().as_millis(),
-        detail: format!("{count} f"),
-        deleted_original: false,
-    })
 }
